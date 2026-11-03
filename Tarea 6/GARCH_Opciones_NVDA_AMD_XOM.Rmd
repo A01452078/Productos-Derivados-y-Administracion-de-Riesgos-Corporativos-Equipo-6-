@@ -1,0 +1,574 @@
+---
+title: "GARCH, Monte Carlo y árboles binomiales: NVDA, AMD y XOM"
+subtitle: "Pronóstico de volatilidad, valuación de opciones americanas y decisión de compra"
+author: "Eduardo Ayala Saldaña, Mariann Antonelli Morales Tobias y Ulises Salinas López"
+date: "2026-11-01"
+lang: es
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    code_folding: hide
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 10, fig.height = 4.4, fig.align = "center")
+options(timeout = 20)
+
+# Acentos y símbolos: si R no está en UTF-8 (pasa en algunas instalaciones de Windows), se intenta activarlo
+if (!l10n_info()[["UTF-8"]]) suppressWarnings(try(Sys.setlocale("LC_CTYPE", if (.Platform$OS.type == "windows") "Spanish_Mexico.utf8" else "C.UTF-8"), silent = TRUE))
+
+# Escribe una caja "En palabras simples" (se usa con results = 'asis')
+leer <- function(...) {
+  x <- c(...)
+  cat("\n\n> **En palabras simples**\n>\n", paste0("> - ", x, "\n", collapse = ""), "\n", sep = "")
+}
+pc <- function(x, d = 1) sprintf(paste0("%.", d, "f %%"), 100 * x)
+```
+
+# Objetivo
+
+Usar un modelo **GARCH(1,1)** para pronosticar la volatilidad de **NVDA, AMD y XOM** hasta el vencimiento de sus opciones
+(**18 de diciembre de 2026**), meter esa volatilidad en el **árbol binomial** de opciones americanas y decidir qué comprar.
+
+El documento responde cuatro preguntas:
+
+1. ¿Qué volatilidad espera GARCH en los próximos meses, frente a lo que cobra el mercado (volatilidad implícita)?
+2. ¿Qué rango de precios deja el **Monte Carlo con GARCH** al vencimiento y a 2 semanas?
+3. ¿La opción está **barata o cara** (señal = σ GARCH ÷ σ implícita) y qué tan sólida es esa señal?
+4. ¿Qué se compra en Investopedia, cuánto cuesta y cuánto se espera ganar o perder?
+
+Las cotizaciones de opciones son las capturadas en **TradingView (cierre del 30-oct-2026, capturadas el 1-nov)**. Todas las posiciones son **compras**: la pérdida máxima es la prima pagada.
+El método sigue la presentación del profesor (Hull, caps. 13 y 22-23) y el notebook de referencia de GARCH.
+
+# Parámetros
+
+Aquí se cambia todo: si se actualizan las cotizaciones, basta con editar `F0` y la lista `mercado`.
+
+```{r parametros}
+rm(list = ls())
+leer <- function(...) {
+  x <- c(...)
+  cat("\n\n> **En palabras simples**\n>\n", paste0("> - ", x, "\n", collapse = ""), "\n", sep = "")
+}
+pc <- function(x, d = 1) sprintf(paste0("%.", d, "f %%"), 100 * x)
+
+tickers  <- c("NVDA", "AMD", "XOM")
+colores  <- c(NVDA = "seagreen", AMD = "firebrick", XOM = "darkorange")
+
+F0       <- as.Date("2026-10-30")       # fecha de las cotizaciones (los datos históricos se cortan aquí)
+FV       <- as.Date("2026-12-18")       # vencimiento
+feriados <- as.Date("2026-11-26")       # Thanksgiving
+r        <- 0.0394                      # tasa libre de riesgo continua (misma de la tarea de árboles)
+mult     <- 100                         # acciones por contrato
+N_SIM    <- 100000                        # trayectorias de Monte Carlo
+lambda   <- 0.94                        # EWMA (RiskMetrics)
+mu       <- 0.08                        # rendimiento esperado anual SUPUESTO para pronosticar el precio
+umbral   <- 0.10                        # diferencia GARCH vs implícita que activa la señal
+horiz    <- 10                          # días hábiles de la "rentabilidad a 2 semanas"
+presupuesto <- 3000                     # USD por posición (igual que la tarea de árboles)
+capital  <- 100000                      # capital del portafolio en Investopedia
+years    <- 5                           # años de historia
+set.seed(123)
+
+# Cotizaciones (TradingView, cierre del 30-oct-2026): spot, strike, dividendo, IV, (bid, ask) y la posición de la tarea de árboles
+mercado <- list(
+  NVDA = list(S = 204.64, K = 200, q = 0.0047, iv = 0.4145, call = c(15.55, 15.75), put = c(9.85, 10.00), compra = "call", n = 2),
+  AMD  = list(S = 504.80, K = 500, q = 0.0,    iv = 0.5864, call = c(46.85, 48.50), put = c(39.70, 40.75), compra = "put",  n = 1),
+  XOM  = list(S = 187.25, K = 185, q = 0.0225, iv = 0.2991, call = c(8.75, 9.20), put = c(6.80, 7.30),  compra = "call", n = 3)
+)
+
+dias_cal <- as.numeric(FV - F0)
+T_anios  <- dias_cal / 365
+dd       <- seq(F0 + 1, FV, by = "day")
+H        <- sum(!(format(dd, "%u") %in% c("6", "7")) & !(dd %in% feriados))   # días hábiles hasta el vencimiento
+cat(sprintf("Cotización: %s | Vencimiento: %s | %d días naturales (T = %.4f años) | %d días hábiles",
+            F0, FV, dias_cal, T_anios, H))
+```
+
+# Datos: precios y rendimientos
+
+Los precios se descargan con `getSymbols` (Yahoo Finance, precio de cierre ajustado). Si no hay internet,
+se usa un archivo local: `precios_usados.csv` (una columna por acción) o `datos/NVDA.csv`, `datos/AMD.csv`, `datos/XOM.csv`.
+Se usa el rendimiento logarítmico $u_i = 100\ln(S_i/S_{i-1})$ (en %).
+
+```{r datos}
+library(quantmod)
+
+bajar <- function(t) {
+  tryCatch({
+    x <- getSymbols(t, src = "yahoo", from = F0 - round(years * 365.25), to = F0 + 1, auto.assign = FALSE)
+    s <- Ad(x); s <- zoo::zoo(as.numeric(s), as.Date(zoo::index(s)))
+    if (length(s) > 300) s else NULL
+  }, error = function(e) NULL)
+}
+leer_local <- function() {
+  if (file.exists("precios_usados.csv")) {
+    d <- read.csv("precios_usados.csv", check.names = FALSE)
+    return(do.call(cbind, lapply(tickers, function(t) zoo::zoo(d[[t]], as.Date(d[[1]])))) )
+  }
+  if (all(file.exists(file.path("datos", paste0(tickers, ".csv"))))) {
+    l <- lapply(tickers, function(t) { d <- read.csv(file.path("datos", paste0(t, ".csv")))
+                                       zoo::zoo(as.numeric(d[[2]]), as.Date(d[[1]])) })
+    return(do.call(cbind, l))
+  }
+  NULL
+}
+
+bajados <- lapply(tickers, bajar)
+if (!any(sapply(bajados, is.null))) {
+  px <- do.call(cbind, bajados); fuente <- "Yahoo Finance (getSymbols)"
+} else {
+  px <- leer_local(); fuente <- "Archivo local (precios_usados.csv / datos/)"
+  if (is.null(px)) stop("No se pudieron obtener precios: ejecuta con internet o coloca precios_usados.csv en la carpeta.")
+}
+colnames(px) <- tickers
+px <- na.omit(px[zoo::index(px) <= F0 & zoo::index(px) >= F0 - round(years * 365.25), ])
+write.csv(data.frame(Date = zoo::index(px), zoo::coredata(px)), "precios_usados.csv", row.names = FALSE)
+
+u <- lapply(tickers, function(t) 100 * diff(log(as.numeric(px[, t]))))
+names(u) <- tickers
+cat(sprintf("Fuente: %s | %d observaciones | del %s al %s\n", fuente, nrow(px), min(zoo::index(px)), max(zoo::index(px))))
+
+base100 <- sweep(zoo::coredata(px), 2, zoo::coredata(px)[1, ], "/") * 100
+matplot(zoo::index(px), base100, type = "l", lty = 1, lwd = 1.6, col = colores[tickers], xlab = "", ylab = "Base 100",
+        main = "Precio de cierre ajustado (base 100)")
+legend("topleft", tickers, col = colores[tickers], lty = 1, lwd = 2, bty = "n")
+```
+
+# Volatilidad histórica y EWMA
+
+```{r hist}
+vol_30  <- sapply(u, function(x) sd(tail(x, 30))  * sqrt(252) / 100)
+vol_1a  <- sapply(u, function(x) sd(tail(x, 252)) * sqrt(252) / 100)
+
+var_ewma_sig <- function(x) {                      # EWMA = GARCH especial con omega = 0, alpha = 1 - lambda, beta = lambda
+  v <- numeric(length(x)); v0 <- mean((x[1:30] - mean(x[1:30]))^2); v[1] <- v0
+  for (i in 2:length(x)) v[i] <- (1 - lambda) * x[i - 1]^2 + lambda * v[i - 1]
+  v
+}
+ewma_hoy <- sapply(u, function(x) { v <- var_ewma_sig(x); sqrt(252 * ((1 - lambda) * tail(x, 1)^2 + lambda * tail(v, 1))) / 100 })
+
+hist_df <- data.frame(Accion = tickers, `Últimos 30 días` = vol_30, `Último año` = vol_1a, `EWMA hoy` = ewma_hoy, check.names = FALSE)
+knitr::kable(hist_df, digits = 3, caption = "Volatilidad anual (decimal)")
+```
+
+```{r hist_txt, results='asis'}
+leer(sprintf("**%s**: en el último año la acción se movió con una volatilidad de %s; en los últimos 30 días, %s; EWMA (λ = 0.94, da más peso a lo reciente) dice %s hoy.",
+             tickers, pc(vol_1a), pc(vol_30), pc(ewma_hoy)),
+     "La volatilidad histórica es una **foto del pasado**. GARCH la mejora porque deja que la volatilidad cambie y regrese a un nivel normal.")
+```
+
+# GARCH(1,1) por máxima verosimilitud
+
+$$\sigma^2_n = \omega + \alpha\,u^2_{n-1} + \beta\,\sigma^2_{n-1},\qquad V_L=\frac{\omega}{1-\alpha-\beta}$$
+
+- $\alpha$: cuánto pesa el **shock de ayer**; $\beta$: cuánto pesa la **memoria** de la volatilidad previa; $\alpha+\beta$: **persistencia**.
+- $V_L$: varianza «normal» (de largo plazo) a la que regresa el modelo.
+- Los parámetros se eligen para que los rendimientos observados sean lo más probables posible (verosimilitud gaussiana, Hull 23.5), con tres puntos de partida por robustez.
+
+```{r garch}
+var_garch <- function(p, x) {
+  v <- numeric(length(x)); v[1] <- mean((x - mean(x))^2)
+  for (i in 2:length(x)) v[i] <- p[1] + p[2] * x[i - 1]^2 + p[3] * v[i - 1]
+  v
+}
+nll <- function(p, x) {
+  if (p[2] + p[3] >= 0.9999) return(1e10)
+  v <- var_garch(p, x); 0.5 * sum(log(2 * pi) + log(v) + x^2 / v)
+}
+ajustar_garch <- function(x) {
+  v <- mean((x - mean(x))^2); mejor <- NULL
+  for (ab in list(c(0.08, 0.90), c(0.05, 0.93), c(0.12, 0.80))) {
+    o <- optim(c(v * (1 - sum(ab)), ab), nll, x = x, method = "L-BFGS-B",
+               lower = c(1e-6, 1e-4, 0.30), upper = c(Inf, 0.5, 0.9998), control = list(maxit = 2000, factr = 1e3))
+    if (is.null(mejor) || o$value < mejor$value) mejor <- o
+  }
+  mejor
+}
+
+fit <- lapply(u, ajustar_garch)
+M <- lapply(tickers, function(t) {
+  p <- fit[[t]]$par; x <- u[[t]]; v <- var_garch(p, x)
+  list(p = p, u = x, v = v, VL = p[1] / (1 - p[2] - p[3]), v_next = p[1] + p[2] * tail(x, 1)^2 + p[3] * tail(v, 1), ll = -fit[[t]]$value)
+}); names(M) <- tickers
+vol_anual <- function(v) sqrt(252 * v) / 100
+
+par_df <- do.call(rbind, lapply(tickers, function(t) with(M[[t]], data.frame(
+  Accion = t, omega = p[1], alpha = p[2], beta = p[3], Persistencia = p[2] + p[3],
+  `Vol. largo plazo` = vol_anual(VL), `Vol. hoy (GARCH)` = vol_anual(v_next),
+  `Vida media del shock (días)` = log(0.5) / log(p[2] + p[3]), check.names = FALSE))))
+knitr::kable(par_df, digits = 4, caption = "Parámetros GARCH(1,1) estimados")
+```
+
+```{r garch_txt, results='asis'}
+leer(sprintf("**%s**: α = %.3f, β = %.3f, persistencia %.3f. La volatilidad de hoy es %s y GARCH espera que regrese hacia %s. Un shock tarda unos %.0f días en perder la mitad de su efecto.",
+             tickers, par_df$alpha, par_df$beta, par_df$Persistencia, pc(par_df$`Vol. hoy (GARCH)`), pc(par_df$`Vol. largo plazo`), par_df$`Vida media del shock (días)`),
+     "Persistencia cercana a 1 = la volatilidad cambia despacio y los sustos duran. Un α alto = reacciona fuerte al último día.")
+```
+
+```{r garch_graf, fig.height=3.8}
+op <- par(mfrow = c(1, 3), mar = c(3, 4, 3, 1))
+for (t in tickers) {
+  s <- vol_anual(M[[t]]$v)
+  plot(tail(zoo::index(px), length(s)), s, type = "l", col = colores[t], lwd = 1.4, xlab = "", ylab = "Volatilidad anual", main = paste(t, "· σ condicional"))
+  abline(h = vol_anual(M[[t]]$VL), lty = 3, col = colores[t], lwd = 1.6)
+}
+par(op)
+```
+
+# Pronóstico de volatilidad hasta el vencimiento (Hull 23.6)
+
+$$E[\sigma^2_{n+k}] = V_L + (\alpha+\beta)^k(\sigma^2_n - V_L)$$
+
+Una opción que vence en $H$ días se valora con la **volatilidad promedio** de esos días (no la de hoy). **Esa es la σ que entra al árbol.**
+
+```{r pron}
+pron_var <- function(m, Hd) { k <- 0:(Hd - 1); m$VL + (m$p[2] + m$p[3])^k * (m$v_next - m$VL) }
+vol_prom <- function(m, Hd) sqrt(252 * mean(pron_var(m, Hd))) / 100
+
+vol_garch <- sapply(M, vol_prom, Hd = H)
+iv        <- sapply(mercado, `[[`, "iv")
+razon     <- vol_garch / iv
+
+plazos <- c(10, 30, H, 126, 252)
+est <- data.frame(Plazo = paste(plazos, "días"), sapply(M, function(m) sapply(plazos, function(d) vol_prom(m, d))))
+knitr::kable(est, digits = 3, caption = "Volatilidad promedio esperada según el plazo")
+
+matplot(1:252, sapply(M, function(m) vol_anual(pron_var(m, 252))), type = "l", lty = 1, lwd = 2, col = colores[tickers],
+        xlab = "Días hábiles hacia adelante", ylab = "Volatilidad anual esperada", main = "GARCH: la volatilidad regresa a su nivel normal")
+abline(v = H, lty = 2); legend("right", tickers, col = colores[tickers], lty = 1, lwd = 2, bty = "n")
+```
+
+```{r pron_txt, results='asis'}
+leer(sprintf("**%s**: hasta el 18-dic GARCH espera una volatilidad promedio de **%s**; el mercado cobra **%s** (razón %.2f).", tickers, pc(vol_garch), pc(iv), razon),
+     "Razón mayor a 1: GARCH ve **más** movimiento que el mercado (opción barata). Menor a 1: ve **menos** (opción cara).",
+     "GARCH no conoce las fechas de reporte de resultados (AMD ≈ 3-nov y NVDA ≈ 24-nov; XOM ya reportó el 30-oct y su precio ya lo refleja); es normal que quede algo por debajo de la implícita cuando hay un reporte dentro de la vida de la opción.")
+```
+
+# Monte Carlo con GARCH
+
+Se simulan 100,000 trayectorias de precio día a día: cada día la volatilidad se actualiza con el choque simulado del día anterior.
+Con `deriva` = rendimiento esperado (8 % anual, **supuesto**) se obtiene el mundo real; con `deriva` = r − q, el mundo neutral al riesgo para valuar.
+
+```{r mc}
+simular <- function(m, S0, Hd, n, deriva) {
+  v <- rep(m$p[1] + m$p[2] * tail(m$u, 1)^2 + m$p[3] * tail(m$v, 1), n)
+  S <- matrix(S0, Hd + 1, n)
+  for (k in 1:Hd) {
+    sig <- sqrt(v); z <- rnorm(n)
+    S[k + 1, ] <- S[k, ] * exp(deriva / 252 - 0.5 * (sig / 100)^2 + (sig / 100) * z)
+    v <- m$p[1] + m$p[2] * (sig * z)^2 + m$p[3] * v
+  }
+  S
+}
+S0  <- sapply(mercado, `[[`, "S")
+SIM <- lapply(tickers, function(t) simular(M[[t]], S0[t], H, N_SIM, mu)); names(SIM) <- tickers
+
+mc_df <- do.call(rbind, lapply(tickers, function(t) {
+  ST <- SIM[[t]][H + 1, ]; q <- quantile(ST, c(.05, .25, .5, .75, .95))
+  data.frame(Accion = t, `Precio hoy` = S0[t], P5 = q[1], P25 = q[2], Mediana = q[3], P75 = q[4], P95 = q[5],
+             `Prob. de subir` = mean(ST > S0[t]), `VaR 99% a 10 días` = -quantile(SIM[[t]][11, ] / S0[t] - 1, 0.01), check.names = FALSE)
+}))
+rownames(mc_df) <- NULL
+knitr::kable(mc_df, digits = c(0, 2, 1, 1, 1, 1, 1, 3, 3), caption = "Precio simulado al vencimiento (mundo real)")
+
+op <- par(mfrow = c(1, 3), mar = c(4, 4, 3, 1))
+for (t in tickers) {
+  q <- apply(SIM[[t]], 1, quantile, c(.05, .25, .5, .75, .95))
+  plot(0:H, q[3, ], type = "n", ylim = range(q), xlab = "Días hábiles", ylab = "Precio", main = paste(t, "· abanico GARCH"))
+  polygon(c(0:H, H:0), c(q[1, ], rev(q[5, ])), col = adjustcolor(colores[t], .2), border = NA)
+  polygon(c(0:H, H:0), c(q[2, ], rev(q[4, ])), col = adjustcolor(colores[t], .35), border = NA)
+  lines(0:H, q[3, ], col = colores[t], lwd = 2); abline(h = S0[t], lty = 3)
+}
+par(op)
+```
+
+```{r mc_txt, results='asis'}
+leer(sprintf("**%s**: con 90 %% de probabilidad el precio al 18-dic queda entre **%.0f y %.0f** (hoy %.2f); mediana %.0f.", tickers, mc_df$P5, mc_df$P95, mc_df$`Precio hoy`, mc_df$Mediana),
+     "El abanico se ensancha con el tiempo: entre más lejos, más incertidumbre. Es la forma de **ver** la volatilidad pronosticada.",
+     "El VaR de 99 % a 10 días es la pérdida que se superaría solo 1 vez de cada 100 en 2 semanas.")
+```
+
+# Árbol binomial americano (CRR) con la σ de GARCH
+
+El árbol valora la opción; **GARCH le dice qué volatilidad usar**. Se usan 500 pasos, dividendo continuo $q$ y ejercicio anticipado.
+
+```{r crr}
+crr <- function(S0, K, r, sig, T, N = 500, tipo = "put", amer = TRUE, q = 0) {
+  dt <- T / N; u <- exp(sig * sqrt(dt)); d <- 1 / u
+  p <- (exp((r - q) * dt) - d) / (u - d); disc <- exp(-r * dt); sg <- if (tipo == "call") 1 else -1
+  j <- 0:N; V <- pmax(sg * (S0 * u^(N - j) * d^j - K), 0); niv <- list()
+  for (i in (N - 1):0) {
+    k <- 0:i; cont <- disc * (p * V[1:(i + 1)] + (1 - p) * V[2:(i + 2)])
+    V <- if (amer) pmax(cont, pmax(sg * (S0 * u^(i - k) * d^k - K), 0)) else cont
+    if (i <= 2) niv[[i + 1]] <- V
+  }
+  list(precio = V[1], niv = niv, u = u, d = d, dt = dt)
+}
+precio <- function(S0, K, sig, T, tipo, amer = TRUE, q = 0, N = 500, rr = r) crr(S0, K, rr, sig, T, N, tipo, amer, q)$precio
+griegas <- function(S0, K, sig, T, tipo, q = 0, N = 500) {
+  a <- crr(S0, K, r, sig, T, N, tipo, TRUE, q); f0 <- a$niv[[1]][1]; f1 <- a$niv[[2]]; f2 <- a$niv[[3]]; u <- a$u; d <- a$d
+  c(precio = a$precio,
+    delta = (f1[1] - f1[2]) / (S0 * u - S0 * d),
+    gamma = ((f2[1] - f2[2]) / (S0 * u^2 - S0) - (f2[2] - f2[3]) / (S0 - S0 * d^2)) / (0.5 * (S0 * u^2 - S0 * d^2)),
+    theta = (f2[2] - f0) / (2 * a$dt) / 365,
+    vega  = crr(S0, K, r, sig + 0.01, T, N, tipo, TRUE, q)$precio - a$precio,
+    rho   = crr(S0, K, r + 0.01, sig, T, N, tipo, TRUE, q)$precio - a$precio)
+}
+
+# Valor de la opción con tres volatilidades distintas
+val <- do.call(rbind, lapply(tickers, function(t) { m <- mercado[[t]]
+  do.call(rbind, lapply(c("call", "put"), function(tp) {
+    data.frame(Accion = t, Opcion = paste(tp, m$K),
+               `σ histórica 1a` = precio(m$S, m$K, vol_1a[t], T_anios, tp, TRUE, m$q),
+               `σ GARCH` = precio(m$S, m$K, vol_garch[t], T_anios, tp, TRUE, m$q),
+               `σ implícita` = precio(m$S, m$K, m$iv, T_anios, tp, TRUE, m$q),
+               Bid = m[[tp]][1], Ask = m[[tp]][2], check.names = FALSE) })) }))
+knitr::kable(val, digits = 2, row.names = FALSE, caption = "Valor del árbol (USD por acción) según la volatilidad usada, frente al mercado")
+```
+
+```{r crr_txt, results='asis'}
+mid_mkt <- (val$Bid + val$Ask) / 2; dif_iv <- abs(val$`σ implícita` - mid_mkt); pdif_iv <- max(dif_iv / mid_mkt)
+leer("Si el valor con **σ GARCH** es mayor que el **ask**, el modelo dice que la opción está barata; si es menor, cara.",
+     sprintf("Con la σ implícita el árbol reproduce el precio medio de mercado con una diferencia máxima de %.2f USD por acción (%s). No es exacta porque la volatilidad implícita que muestra TradingView sale de su propio modelo y las cotizaciones son las del último cierre; aun así sirve de comprobación de que el árbol está bien armado.", max(dif_iv), pc(pdif_iv)))
+```
+
+## Griegas de la opción comprada (por contrato, con σ GARCH)
+
+```{r griegas}
+gr <- do.call(rbind, lapply(tickers, function(t) { m <- mercado[[t]]; g <- griegas(m$S, m$K, vol_garch[t], T_anios, m$compra, m$q)
+  g <- unname(g); data.frame(Accion = t, Opcion = paste(m$compra, m$K), `Delta (acciones)` = g[2] * mult, Gamma = g[3] * mult,
+             `Theta (USD/día)` = g[4] * mult, `Vega (USD por +1 pto)` = g[5] * mult, `Rho (USD por +1 pto)` = g[6] * mult, check.names = FALSE) }))
+rownames(gr) <- NULL
+knitr::kable(gr, digits = 2, caption = "Griegas por contrato (100 acciones)")
+```
+
+```{r gr_txt, results='asis'}
+leer(sprintf("**%s %s %s**: se comporta como %.0f acciones; pierde **%.2f USD por día** por el paso del tiempo; si la volatilidad sube 1 punto gana %.2f USD.",
+             gr$Accion, toupper(sub(" .*", "", gr$Opcion)), sub(".* ", "", gr$Opcion), abs(gr$`Delta (acciones)`), abs(gr$`Theta (USD/día)`), gr$`Vega (USD por +1 pto)`))
+```
+
+## ¿Vale la pena el ejercicio anticipado?
+
+```{r amer}
+am <- do.call(rbind, lapply(tickers, function(t) { m <- mercado[[t]]
+  do.call(rbind, lapply(c("call", "put"), function(tp) {
+    a <- precio(m$S, m$K, vol_garch[t], T_anios, tp, TRUE, m$q); e <- precio(m$S, m$K, vol_garch[t], T_anios, tp, FALSE, m$q)
+    data.frame(Accion = t, Opcion = tp, Americana = a, Europea = e, `Prima de ejercicio anticipado` = a - e, check.names = FALSE) })) }))
+knitr::kable(am, digits = 3, row.names = FALSE)
+```
+
+```{r am_txt, results='asis'}
+leer("La **put** americana siempre vale algo más que la europea: puede convenir ejercer antes para cobrar el strike y ganar intereses.",
+     "La **call** solo conviene ejercerla antes si la acción paga dividendos mayores a lo que se ganaría esperando (XOM, y muy poco NVDA). Sin dividendos, call americana = call europea.")
+```
+
+## Niveles de nodos del árbol (4 pasos, con la σ de GARCH)
+
+Para ver el árbol «a mano» se dibujan solo 4 pasos (el cálculo real usa 500). En cada nodo se compara **ejercer ya** con **esperar**.
+
+```{r nodos, results='asis'}
+arbol_niveles <- function(S0, K, r, sig, T, N = 4, tipo = "call", q = 0) {
+  dt <- T / N; u <- exp(sig * sqrt(dt)); d <- 1 / u
+  p <- (exp((r - q) * dt) - d) / (u - d); disc <- exp(-r * dt); sg <- if (tipo == "call") 1 else -1
+  S <- lapply(0:N, function(i) S0 * u^(i - 0:i) * d^(0:i))
+  V <- vector("list", N + 1); EX <- vector("list", N + 1)
+  V[[N + 1]] <- pmax(sg * (S[[N + 1]] - K), 0); EX[[N + 1]] <- rep(FALSE, N + 1)
+  for (i in (N - 1):0) {
+    cont <- disc * (p * V[[i + 2]][1:(i + 1)] + (1 - p) * V[[i + 2]][2:(i + 2)])
+    ex <- pmax(sg * (S[[i + 1]] - K), 0)
+    V[[i + 1]] <- pmax(cont, ex); EX[[i + 1]] <- ex > cont + 1e-12 & ex > 0
+  }
+  list(S = S, V = V, EX = EX, u = u, d = d, p = p)
+}
+n_ex <- c()
+for (t in tickers) {
+  m <- mercado[[t]]; a <- arbol_niveles(m$S, m$K, r, vol_garch[t], T_anios, 4, m$compra, m$q)
+  filas <- do.call(rbind, lapply(c(0, 1, 2, 4), function(i) data.frame(
+    Paso = i, `Nodo (bajas)` = 0:i, `Precio de la acción` = a$S[[i + 1]], `Valor de la opción` = a$V[[i + 1]],
+    `Mejor acción` = ifelse(a$EX[[i + 1]], "Ejercer", ifelse(i == 4, "Vence", "Esperar")), check.names = FALSE)))
+  n_ex[t] <- sum(unlist(a$EX))
+  cat(sprintf("\n\n**%s · %s %g · σ GARCH %s · u = %.4f, d = %.4f, p = %.4f** (pasos 0, 1, 2 y 4)\n\n", t, m$compra, m$K, pc(vol_garch[t]), a$u, a$d, a$p))
+  print(knitr::kable(filas, digits = 2, row.names = FALSE))
+}
+leer(sprintf("Cada paso son ~%.0f días. En cada nodo la acción sube (×u) o baja (×d); el valor de la opción se calcula de atrás hacia adelante, igual que en el trabajo de árboles.", dias_cal / 4),
+     "«Ejercer» aparece cuando cobrar el valor intrínseco ya vale más que esperar; en una call sin dividendos casi nunca ocurre, y en una put sí puede ocurrir en los nodos donde la acción cayó mucho.",
+     sprintf("**%s**: nodos de ejercicio anticipado en el árbol de 4 pasos: %d.", tickers, n_ex[tickers]))
+```
+
+## Comprobación: Monte Carlo (σ GARCH) vs. árbol europeo
+
+```{r mc_vs_arbol}
+chk <- do.call(rbind, lapply(tickers, function(t) { m <- mercado[[t]]
+  ST <- simular(M[[t]], m$S, H, N_SIM * 2, r - m$q)[H + 1, ]; dsc <- exp(-r * T_anios)
+  data.frame(Accion = t, `Call MC` = dsc * mean(pmax(ST - m$K, 0)), `Call árbol` = precio(m$S, m$K, vol_garch[t], T_anios, "call", FALSE, m$q),
+             `Put MC` = dsc * mean(pmax(m$K - ST, 0)), `Put árbol` = precio(m$S, m$K, vol_garch[t], T_anios, "put", FALSE, m$q), check.names = FALSE) }))
+knitr::kable(chk, digits = 3, row.names = FALSE, caption = "Opciones europeas: simulación completa vs. árbol con σ promedio")
+```
+
+```{r chk_txt, results='asis'}
+leer("Si los dos métodos coinciden, usar la **volatilidad promedio de GARCH** dentro del árbol es una buena aproximación para un plazo de 2 meses.")
+```
+
+# Estrategia: señal de volatilidad y resultado esperado
+
+**Señal** (presentación, diap. 15): razón = σ GARCH promedio ÷ σ implícita.
+
+- **> 1.10**: GARCH ve más volatilidad que el mercado → opción barata → **comprar volatilidad** (straddle largo: call + put).
+- **0.90 – 1.10**: **sin ventaja** en volatilidad.
+- **< 0.90**: opción cara → **no comprar** por volatilidad.
+
+El resultado esperado se estima con trayectorias GARCH «del mundo real» y se compra al **ask**.
+
+```{r senal}
+senal <- function(x) if (x > 1 + umbral) "COMPRAR volatilidad" else if (x < 1 - umbral) "NO COMPRAR (opción cara)" else "SIN VENTAJA en volatilidad"
+
+ST_real <- lapply(tickers, function(t) simular(M[[t]], S0[t], H, N_SIM * 2, mu)[H + 1, ]); names(ST_real) <- tickers
+SEN <- do.call(rbind, lapply(tickers, function(t) { m <- mercado[[t]]; ST <- ST_real[[t]]
+  costo <- m$call[2] + m$put[2]; pnl <- pmax(ST - m$K, 0) + pmax(m$K - ST, 0) - costo
+  data.frame(Accion = t, Razon = razon[t], `Señal` = senal(razon[t]), `Costo straddle (USD/acción)` = costo,
+             `Equilibrio inferior` = m$K - costo, `Equilibrio superior` = m$K + costo, `P&L esperado (USD/acción)` = mean(pnl), `Prob. de ganar` = mean(pnl > 0), check.names = FALSE) }))
+knitr::kable(SEN, digits = 2, row.names = FALSE, caption = "Straddle largo (call + put al mismo strike)")
+
+op <- par(mfrow = c(1, 3), mar = c(4, 4, 3, 1))
+for (t in tickers) { m <- mercado[[t]]; s <- SEN[SEN$Accion == t, ]
+  g <- seq(quantile(ST_real[[t]], .005), quantile(ST_real[[t]], .995), length.out = 200)
+  plot(g, pmax(g - m$K, 0) + pmax(m$K - g, 0) - s$`Costo straddle (USD/acción)`, type = "l", lwd = 2.2, col = colores[t],
+       xlab = "Precio al vencimiento", ylab = "USD por acción", main = paste(t, "· straddle", m$K))
+  abline(h = 0); abline(v = c(s$`Equilibrio inferior`, s$`Equilibrio superior`), lty = 2); abline(v = m$S, lty = 3) }
+par(op)
+```
+
+```{r senal_txt, results='asis'}
+leer(sprintf("**%s** · razón %.2f → **%s**. Un straddle cuesta %.2f por acción: gana solo si al vencimiento la acción queda debajo de %.0f o arriba de %.0f. Probabilidad de ganar según GARCH: %s.",
+             SEN$Accion, SEN$Razon, SEN$`Señal`, SEN$`Costo straddle (USD/acción)`, SEN$`Equilibrio inferior`, SEN$`Equilibrio superior`, pc(SEN$`Prob. de ganar`, 0)),
+     "El straddle gana con movimientos grandes en cualquier dirección y pierde si la acción casi no se mueve. Solo conviene cuando GARCH espera más volatilidad de la que cobra el mercado.")
+```
+
+## La posición direccional de la tarea de árboles
+
+```{r posicion}
+POS <- lapply(tickers, function(t) { m <- mercado[[t]]; ST <- ST_real[[t]]; tp <- m$compra; ask <- m[[tp]][2]
+  pay <- if (tp == "call") pmax(ST - m$K, 0) else pmax(m$K - ST, 0); pnl <- (pay - ask) * mult * m$n
+  list(tipo = tp, ask = ask, n = m$n, costo = ask * mult * m$n, prob_itm = mean(pay > 0), prob_gan = mean(pnl > 0), pnl_esp = mean(pnl), p5 = quantile(pnl, .05), p95 = quantile(pnl, .95), pnl = pnl) })
+names(POS) <- tickers
+pos_df <- do.call(rbind, lapply(tickers, function(t) with(POS[[t]], data.frame(Accion = t, Opcion = paste(tipo, mercado[[t]]$K), Contratos = n, Ask = ask,
+  `Costo total (USD)` = costo, `Prob. en el dinero` = prob_itm, `Prob. de ganar` = prob_gan, `P&L esperado (USD)` = pnl_esp, `P5 (USD)` = p5, `P95 (USD)` = p95, check.names = FALSE))))
+rownames(pos_df) <- NULL
+knitr::kable(pos_df, digits = c(0, 0, 0, 2, 0, 3, 3, 0, 0, 0), caption = "Resultado al 18-dic según GARCH")
+```
+
+```{r pos_txt, results='asis'}
+leer(sprintf("**%s** (%s × %d): costo %.0f USD, que es lo máximo que se puede perder. Probabilidad de ganar %s; resultado esperado %+.0f USD.",
+             pos_df$Accion, pos_df$Opcion, pos_df$Contratos, pos_df$`Costo total (USD)`, pc(pos_df$`Prob. de ganar`, 0), pos_df$`P&L esperado (USD)`),
+     sprintf("Los resultados dependen del rendimiento supuesto (%s anual): son una guía, no una promesa.", pc(mu, 0)))
+```
+
+# ¿Qué tan sólida es la señal?
+
+La señal depende de **un** pronóstico. Se repite la razón con otras formas de medir la volatilidad: GARCH con 5, 3 y 2 años, la histórica de 1 año y EWMA.
+Si al menos 3 de las 4 alternativas coinciden con la señal base (GARCH de 5 años), la señal es **sólida**; si no, es **frágil**.
+
+```{r robustez}
+vol_ventana <- function(t, n) {
+  x <- tail(u[[t]], n); p <- ajustar_garch(x)$par; v <- var_garch(p, x); VL <- p[1] / (1 - p[2] - p[3])
+  vn <- p[1] + p[2] * tail(x, 1)^2 + p[3] * tail(v, 1); sqrt(252 * mean(VL + (p[2] + p[3])^(0:(H - 1)) * (vn - VL))) / 100
+}
+ROB <- do.call(rbind, lapply(tickers, function(t) {
+  med <- c(`GARCH 5 años` = unname(vol_garch[t]), `GARCH 3 años` = vol_ventana(t, 756), `GARCH 2 años` = vol_ventana(t, 504),
+           `Histórica 1 año` = unname(vol_1a[t]), `EWMA hoy` = unname(ewma_hoy[t]))
+  rz <- med / iv[t]; base <- senal(rz[1]); coinc <- sum(sapply(rz[-1], senal) == base)
+  data.frame(Accion = t, t(round(rz, 2)), `Coinciden (de 4)` = coinc, Solidez = if (coinc >= 3) "Sólida" else "Frágil", check.names = FALSE) }))
+knitr::kable(ROB, row.names = FALSE, caption = "Razón σ / σ implícita según cómo se mida la volatilidad")
+```
+
+```{r rob_txt, results='asis'}
+leer(sprintf("**%s**: coinciden %d de 4 → señal **%s**.", ROB$Accion, ROB$`Coinciden (de 4)`, tolower(ROB$Solidez)),
+     "Una señal frágil depende de cómo se estime la volatilidad (por ejemplo, de que GARCH regrese a un nivel «normal» calculado con años en que la acción se comportó distinto).",
+     "Una razón apenas arriba de 1.10 o abajo de 0.90 también es débil: un cambio pequeño en los datos la mueve de categoría.")
+```
+
+# Decisión para Investopedia
+
+Tamaño por posición: mismo presupuesto de la tarea de árboles (**3,000 USD**). **Costo total = ask × 100 × contratos.** La pérdida máxima de una opción comprada es lo que se paga.
+
+```{r decision}
+contratos_para <- function(c_unit) max(1, round(presupuesto / (c_unit * mult)))
+DEC <- lapply(tickers, function(t) { m <- mercado[[t]]; p <- POS[[t]]; rz <- razon[t]; solida <- ROB$Solidez[ROB$Accion == t] == "Sólida"; ST <- ST_real[[t]]
+  if (rz > 1 + umbral) {
+    cu <- m$call[2] + m$put[2]; n <- contratos_para(cu); pnl <- (pmax(ST - m$K, 0) + pmax(m$K - ST, 0) - cu)
+    list(accion = paste0("COMPRAR straddle (call + put)", if (!solida) " (señal frágil)" else ""), n = n, contrato = sprintf("CALL %g @ %.2f + PUT %g @ %.2f", m$K, m$call[2], m$K, m$put[2]),
+         costo = cu * mult * n, pg = mean(pnl > 0), pe = mean(pnl) * mult * n)
+  } else if (rz < 1 - umbral) {
+    list(accion = "NO COMPRAR por volatilidad (opción cara)", n = 0, contrato = sprintf("Si se compra por tesis direccional: %s %g @ %.2f", toupper(p$tipo), m$K, p$ask),
+         costo = 0, pg = p$prob_gan, pe = p$pnl_esp)
+  } else {
+    n <- contratos_para(p$ask); pay <- if (p$tipo == "call") pmax(ST - m$K, 0) else pmax(m$K - ST, 0); pnl <- pay - p$ask
+    list(accion = sprintf("MANTENER solo la %s direccional (sin ventaja de volatilidad)", toupper(p$tipo)), n = n, contrato = sprintf("%s %g @ %.2f", toupper(p$tipo), m$K, p$ask),
+         costo = p$ask * mult * n, pg = mean(pnl > 0), pe = mean(pnl) * mult * n)
+  } }); names(DEC) <- tickers
+dec_df <- do.call(rbind, lapply(tickers, function(t) with(DEC[[t]], data.frame(Accion = t, Razon = razon[t], Decision = accion, Contrato = contrato, Contratos = n,
+  `Costo total (USD)` = costo, `Prob. de ganar` = pg, `P&L esperado (USD)` = pe, check.names = FALSE))))
+rownames(dec_df) <- NULL
+knitr::kable(dec_df, digits = c(0, 2, 0, 0, 0, 0, 2, 0))
+total_dec <- sum(sapply(DEC, `[[`, "costo"))
+```
+
+```{r dec_txt, results='asis'}
+leer(sprintf("**%s**: %s. %s", tickers, dec_df$Decision,
+             ifelse(dec_df$`P&L esperado (USD)` < 0 & dec_df$Contratos > 0, "Ojo: con el rendimiento supuesto el resultado esperado es negativo; es una apuesta direccional, no una ventaja de volatilidad.",
+                    ifelse(dec_df$Contratos == 0, "GARCH no ve el reporte de resultados que sí está en la implícita; tomar con cautela.", ""))),
+     sprintf("Costo total de las decisiones: **%s USD**, es decir %s del capital de %s USD (la pérdida máxima es ese monto).", format(round(total_dec), big.mark = ","), pc(total_dec / capital), format(capital, big.mark = ",", scientific = FALSE)),
+     "Esta tabla es la que se lleva a Investopedia: contrato, cantidad y costo. Siempre hay riesgo: una opción comprada puede perder todo lo pagado. Ejercicio académico, no recomendación de inversión.")
+```
+
+# Rentabilidad a 2 semanas
+
+La tarea pide la rentabilidad **en las próximas 2 semanas**. Se toman las trayectorias GARCH a 10 días hábiles, se **revalúa** cada opción con lo que le queda de vida
+(Black-Scholes con la volatilidad implícita de hoy, como aproximación) y se supone que se **vende al bid** (se resta medio diferencial bid-ask). La ganancia se mide contra el **ask** pagado.
+
+```{r dos_semanas}
+T_rest <- max(T_anios - horiz * 7 / 5 / 365, 1 / 365)
+bs <- function(S, K, T, r, sg, q, tipo) {
+  d1 <- (log(S / K) + (r - q + 0.5 * sg^2) * T) / (sg * sqrt(T)); d2 <- d1 - sg * sqrt(T)
+  if (tipo == "call") S * exp(-q * T) * pnorm(d1) - K * exp(-r * T) * pnorm(d2) else K * exp(-r * T) * pnorm(-d2) - S * exp(-q * T) * pnorm(-d1)
+}
+filas <- list()
+for (t in tickers) { m <- mercado[[t]]; Sh <- SIM[[t]][horiz + 1, ]
+  v <- lapply(c(call = "call", put = "put"), function(tp) bs(Sh, m$K, T_rest, r, m$iv, m$q, tp) - (m[[tp]][2] - m[[tp]][1]) / 2)
+  pos <- list()
+  if (DEC[[t]]$n > 0 && grepl("^COMPRAR", DEC[[t]]$accion)) pos[["Straddle recomendado"]] <- list(n = DEC[[t]]$n, cu = m$call[2] + m$put[2], v = v$call + v$put)
+  pos[[sprintf("%s %g (tarea de árboles)", toupper(m$compra), m$K)]] <- list(n = m$n, cu = m[[m$compra]][2], v = v[[m$compra]])
+  for (nm in names(pos)) { p <- pos[[nm]]; pnl <- (p$v - p$cu) * mult * p$n; cst <- p$cu * mult * p$n
+    filas[[length(filas) + 1]] <- data.frame(Accion = t, Posicion = nm, Contratos = p$n, `Costo (USD)` = cst, `P&L esperado 2 sem. (USD)` = mean(pnl),
+      Rentabilidad = mean(pnl) / cst, `Prob. de ganar` = mean(pnl > 0), `P5 (USD)` = unname(quantile(pnl, .05)), `P95 (USD)` = unname(quantile(pnl, .95)), check.names = FALSE) } }
+r2 <- do.call(rbind, filas)
+knitr::kable(r2, digits = c(0, 0, 0, 0, 0, 3, 2, 0, 0), row.names = FALSE, caption = sprintf("Resultado a %d días hábiles (quedan %.0f días de vida)", horiz, T_rest * 365))
+```
+
+```{r dos_txt, results='asis'}
+leer(sprintf("**%s · %s**: costo %.0f USD; en 2 semanas se espera %+.0f USD (%+.1f %%) con probabilidad de ganar %s (rango P5–P95: %+.0f a %+.0f).",
+             r2$Accion, r2$Posicion, r2$`Costo (USD)`, r2$`P&L esperado 2 sem. (USD)`, 100 * r2$Rentabilidad, pc(r2$`Prob. de ganar`, 0), r2$`P5 (USD)`, r2$`P95 (USD)`),
+     "**Lectura importante:** a 2 semanas el resultado esperado queda cerca de cero. La ventaja de GARCH (opción barata o cara) se cobra cuando la volatilidad implícita se acerca a la que GARCH espera, y aquí se mantuvo constante; además se paga el diferencial bid-ask al salir. Por eso la ganancia en 2 semanas depende sobre todo de hacia dónde se mueva el precio.",
+     "La rentabilidad real se muestra con las capturas de Investopedia, CME y TradingView (carpeta de evidencias).")
+```
+
+# Conclusiones
+
+```{r conclusiones, results='asis'}
+leer(sprintf("**%s**: GARCH α = %.3f, β = %.3f (persistencia %.3f). Vol. hoy %s → normal %s; promedio esperado hasta el 18-dic **%s** vs. %s del mercado (razón %.2f). Rango de precio (P5–P95): %.0f–%.0f. **Decisión: %s.**",
+             tickers, par_df$alpha, par_df$beta, par_df$Persistencia, pc(par_df$`Vol. hoy (GARCH)`), pc(par_df$`Vol. largo plazo`), pc(vol_garch), pc(iv), razon, mc_df$P5, mc_df$P95, dec_df$Decision),
+     "**GARCH vs. árbol:** el árbol binomial valora la opción; GARCH le dice **qué volatilidad usar** durante su vida.",
+     "**Limitaciones:** GARCH(1,1) supone normalidad, no captura asimetría (para eso existen GJR-GARCH y EGARCH), no conoce las fechas de reporte, y los resultados dependen de los datos y de los supuestos (rendimiento esperado, tasa libre de riesgo, cotizaciones del 30-oct).",
+     "Material educativo; no es una recomendación de inversión.")
+```
+
+# Información de la sesión
+
+```{r sesion}
+sessionInfo()
+```

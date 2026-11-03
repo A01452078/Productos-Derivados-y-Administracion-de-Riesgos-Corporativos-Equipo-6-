@@ -94,7 +94,6 @@ Para actualizar las cotizaciones basta con editar `F0` (fecha) y la lista `merca
 El trabajo se desarrolló con apoyo de herramientas de IA y fue revisado por el equipo:
 
 - **TECgpt:** conversación en la que se construyó y verificó código en R base para cada bloque del análisis. Está en `evidencias/`.
-- **Claude (Anthropic):** apoyo para armar y actualizar el Rmd, los notebooks y el dashboard, y para verificar que los resultados coincidieran entre archivos.
 
 ## Aviso
 

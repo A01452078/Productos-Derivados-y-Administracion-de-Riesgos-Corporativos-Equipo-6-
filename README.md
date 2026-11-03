@@ -1,6 +1,6 @@
 # Productos-Derivados-y-Administracion-de-Riesgos-Corporativos-Equipo-6
-Compilado de avances del proyecto final
+Avance 2 Proyecto Final
 
-Estrategias y Griegas Bloomberg: contiene el reporte del análisis de las capturas obtenidas en Bloomberg así como la comparativa de los resultados vs LSEG (Tarea 3). 
+Tarea 6: Modelos GARCH MonteCarlo - LSEG 
 
-Preguntas Libro: Respuestas a las preguntas del Capítulo 21.
+Preguntas Libro: Respuestas a las preguntas del Capítulo 23.

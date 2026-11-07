@@ -1,4 +1,4 @@
-# 08 Anexo de capturas de LSEG Workspace
+# 07 Anexo de capturas de LSEG Workspace
 
 Evidencia de que los datos del análisis provienen de LSEG Workspace.
 

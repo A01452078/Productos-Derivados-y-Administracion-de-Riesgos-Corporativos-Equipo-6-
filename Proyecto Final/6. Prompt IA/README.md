@@ -40,6 +40,3 @@ El código no se aceptó tal cual. Las correcciones quedan en las propias conver
 - Los datos provienen de LSEG Workspace y de los reportes de Walmart (10-K y 10-Q). La IA no aportó datos de mercado: trabajó con los que se le entregaron.
 - Todo resultado que aparece en los entregables se contrastó con los archivos de `09_datos` y con las capturas de `08_anexo_capturas`.
 - En el PDF de la conversación 3, un prompt muestra caracteres como `é` en lugar de letras con acento. Es un detalle de cómo se pegó el texto, no afecta el contenido.
-
-## Otro archivo
-- `Prompt_IA_Walmart.pdf`: resumen de 5 páginas del uso de Claude (Anthropic) durante el trabajo previo (25-oct a 1-nov), con prompts, código recibido y registro de correcciones.

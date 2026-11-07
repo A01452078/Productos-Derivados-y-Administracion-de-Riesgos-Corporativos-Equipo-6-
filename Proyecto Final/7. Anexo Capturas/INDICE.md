@@ -27,10 +27,3 @@ Todas las capturas se tomaron el 6 de noviembre de 2026 (entre 12:11 y 15:04, ho
 | 21_Basis_Cruzado_CAD_USD_5Y_CADCBS | CADCBS5Y= | Basis swap CAD/USD a 5 años: -11.60 pb (6-nov-2026, 09:14) |
 | 22_Basis_Cruzado_CAD_USD_7Y_CADCBS | CADCBS7Y= | Basis swap CAD/USD a 7 años: -8.90 pb (6-nov-2026, 09:14) |
 | 23_Basis_Cruzado_CAD_USD_10Y_CADCBS | CADCBS10Y= | Basis swap CAD/USD a 10 años: -5.10 pb (6-nov-2026, 09:10) |
-
-## Pendiente de capturar
-
-- Curva del Tesoro (Government Bond Prices, Tradeweb).
-- Curva swap de dólares usada en la sección de swaps, si proviene de LSEG.
-- Tabla de dividendos de WMT.O con el monto (0.25) y la fecha ex-dividendo (11-dic-2026): bajar en la misma pantalla DIVO.
-- Plataformas de operación del portafolio (saldos de las dos cuentas).

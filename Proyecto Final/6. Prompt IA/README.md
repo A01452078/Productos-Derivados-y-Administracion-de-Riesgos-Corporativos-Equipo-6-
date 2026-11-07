@@ -1,4 +1,4 @@
-# 07 Uso de inteligencia artificial
+# 06 Uso de inteligencia artificial
 
 Registro del uso de IA en el proyecto de Walmart, conforme al requisito del curso. La herramienta principal fue **TECgpt (ChatGPT, GPT 5.2)**, el portal institucional del Tec. Aquí están las tres conversaciones completas, con los prompts de Mariann, las respuestas de la IA, el código recibido y las correcciones hechas después de probarlo.
 

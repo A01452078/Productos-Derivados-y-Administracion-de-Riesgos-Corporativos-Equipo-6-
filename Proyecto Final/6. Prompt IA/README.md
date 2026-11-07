@@ -1,4 +1,4 @@
-# 07 Uso de inteligencia artificial
+# 06 Uso de inteligencia artificial
 
 Documentación del uso de IA en el proyecto, conforme al requisito del curso.
 

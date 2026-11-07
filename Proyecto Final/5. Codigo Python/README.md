@@ -1,4 +1,4 @@
-# 06 Código
+# 05 Código
 
 Motor de cálculo del proyecto de Walmart. Cada script tiene su notebook en `notebooks/`.
 

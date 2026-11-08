@@ -6,9 +6,9 @@ Insumos del reporte y salidas de la cobertura.
 
 | Archivo | Contenido |
 |---|---|
-| `historial_investopedia.csv` | Historial de operaciones de Mariann en Investopedia (fecha, símbolo, tipo, cantidad, precio) |
+| `historial_investopedia.csv` | Historial de operaciones en Investopedia (fecha, símbolo, tipo, cantidad, precio) |
 | `tradingview_posiciones.csv` | Posiciones abiertas en TradingView Paper Trading (símbolo, lado, cantidad, precio promedio, P&L, vencimiento) |
-| `historial_cme.xls` | Exportación original del historial de Investopedia (26 operaciones, hoja `simulator`) de la que se derivó `historial_investopedia.csv`. Es un HTML con extensión .xls: Excel lo abre y avisa del formato. A pesar del nombre, no es de CME, que no permite descargar su historial |
+| `historial_cme.xls` | Historial de operaciones en CME (fecha, símbolo, tipo, cantidad, precio) |
 
 ## Salidas de `Códigos/swap_cobertura.py`
 

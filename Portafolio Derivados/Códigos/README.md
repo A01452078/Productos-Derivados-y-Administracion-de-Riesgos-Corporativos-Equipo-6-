@@ -30,9 +30,9 @@ Calibraciones y comparaciones hechas con las cadenas de opciones leídas el 5-no
 
 | Script | Qué hace |
 |---|---|
-| `pnl_edu.py` | Reconstrucción del P&L realizado de Eduardo en Investopedia |
-| `cme_closed.py` | Reconstrucción del P&L realizado de Eduardo en CME Practice |
-| `estrategias.py` | Identificación de estrategias dentro del historial de Eduardo |
-| `spreads.py` | Comparación de los dos bull call spreads del equipo (oro de Eduardo y crudo de Ulises) |
+| `pnl_edu.py` | Reconstrucción del P&L realizado en Investopedia |
+| `cme_closed.py` | Reconstrucción del P&L realizado en CME Practice |
+| `estrategias.py` | Identificación de estrategias |
+| `spreads.py` | Comparación de los dos bull call spreads del equipo (oro y crudo) |
 
 Requisitos: Python 3 con `numpy`, `scipy` y `pandas`.

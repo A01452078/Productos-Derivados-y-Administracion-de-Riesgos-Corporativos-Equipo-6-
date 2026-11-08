@@ -1,0 +1,1043 @@
+---
+title: "Árboles binomiales y opciones americanas: portafolio de ocho subyacentes"
+author: "Eduardo Ayala Saldaña, Mariann Antonelli Morales Tobias y Ulises Salinas López"
+date: "2026-10-24"
+output:
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    theme: flatly
+    df_print: paged
+    self_contained: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.width = 9, fig.height = 5,
+                      message = FALSE, warning = FALSE)
+library(knitr)
+library(kableExtra)
+```
+
+## Integrantes
+
+```{r integrantes, echo=FALSE}
+equipo <- data.frame(
+  Nombre = c("Eduardo Ayala Saldaña", "Mariann Antonelli Morales Tobias",
+             "Ulises Salinas López"),
+  Matricula = c("A01192714", "A01452078", "A00814787")
+)
+kable(equipo, col.names = c("Integrante", "Matrícula")) %>%
+  kable_styling(bootstrap_options = c("striped", "condensed"), full_width = FALSE)
+```
+
+## Objetivo y método
+
+Se valúan con el modelo binomial de **Cox-Ross-Rubinstein (CRR)** ocho opciones **americanas**, una por cada subyacente del portafolio (SPY, TLT, XOM, GLD, SLV, NVDA, ASML y AMD), todas con vencimiento el **viernes 18 de diciembre de 2026**, es decir, a 56 días naturales de las cotizaciones (cerca de dos meses, dentro del rango de uno a tres que pide la actividad).
+
+Para cada opción se hace lo siguiente:
+
+1. Se construye el árbol y se **muestran los nodos de los primeros pasos**: precio del subyacente, valor intrínseco, valor de continuación y valor de la opción, marcando los nodos donde conviene ejercer antes.
+2. Se compara la americana contra la europea del mismo árbol y contra Black-Scholes-Merton, para medir cuánto vale el derecho a ejercer antes del vencimiento.
+3. Se obtienen las Griegas directamente de los nodos y se contrastan con las que publica TradingView.
+4. Se lee del árbol la **distribución del precio a vencimiento** (forecast) y se calculan probabilidades de terminar en dinero y de ganar neto de prima.
+5. Se justifica la estrategia (call o put) y se asigna el capital entre las ocho posiciones.
+
+**Datos.** Las cotizaciones son capturas de **TradingView** del cierre del **viernes 23 de octubre de 2026** (bid, ask, volumen, volatilidad implícita, Griegas y precio teórico de cada contrato). El dividend yield de cada subyacente sale de la ficha del símbolo en TradingView. La ejecución se hizo en el simulador de Investopedia y sus capturas se anexan al final.
+
+**Parámetros del modelo.**
+
+- *Volatilidad:* la volatilidad implícita que publica TradingView para cada strike (una sola por strike, igual para el call y el put). Como control, también se despeja del propio árbol la volatilidad que reproduce el punto medio bid/ask.
+- *Tasa libre de riesgo:* la misma de las tareas anteriores, 3.94 % continua (T-bill de 4 semanas, FRED).
+- *Dividendos:* rendimiento continuo $q$ igual al *dividend yield (indicated)* de TradingView; es cero en GLD, SLV y AMD.
+- *Plazo:* $T = 56/365$, con días naturales entre 365, igual que en el resto del curso.
+
+**Limitaciones.** El open interest no aparece en las capturas, así que la liquidez se mide con el spread bid/ask y el volumen del día. Las tasas y los dividendos se suponen constantes. El dividend yield indicado es una aproximación del dividendo continuo; en ETF y acciones que pagan trimestral o mensual el dividendo real es discreto. Las probabilidades que salen del árbol son **neutrales al riesgo**, no pronósticos.
+
+## Parámetros
+
+```{r parametros}
+# 0. Limpiar la sesión
+
+rm(list = ls())
+
+# 1. Fechas y plazo
+
+fecha_analisis    <- as.Date("2026-10-23")   # cierre de las cotizaciones
+fecha_vencimiento <- as.Date("2026-12-18")   # tercer viernes de diciembre
+dias_a_vencimiento <- as.numeric(fecha_vencimiento - fecha_analisis)   # 56 días
+T_anios <- dias_a_vencimiento / 365
+
+# 2. Tasa libre de riesgo (la misma de las tareas anteriores)
+
+rf <- 0.0394
+
+# 3. Otros parámetros
+
+mult    <- 100       # acciones/ETF por contrato
+capital <- 100000    # cuenta del simulador (USD)
+N_precio <- 500      # pasos del árbol de valuación
+N_nodos  <- 4        # pasos del árbol que se dibuja nodo por nodo
+presupuesto_pos <- 3000   # prima objetivo por posición (USD); regla de asignación
+
+cat("Plazo:", dias_a_vencimiento, "días; T =", round(T_anios, 5), "años\n")
+cat("Tasa libre de riesgo (continua):", rf * 100, "%\n")
+cat("Pasos de valuación:", N_precio, "-> cada paso dura", round(T_anios / N_precio * 365, 3), "días\n")
+```
+
+## Datos de mercado
+
+```{r datos}
+# Una fila por opción. Fuente: TradingView, cierre del 23-oct-2026, vto. 18-dic-2026.
+# iv = volatilidad implícita de TradingView (%); d, g, rho, th, v = Griegas de TradingView
+# (theta por día, vega por 1 punto de volatilidad, rho por 1 punto de tasa); teo = precio teórico.
+
+op <- function(activo, tipo, K, S, q, bid, ask, vol, iv, d, g, rho, th, v, teo)
+  data.frame(activo = activo, tipo = tipo, K = K, S = S, q = q, bid = bid, ask = ask,
+             vol = vol, iv_tv = iv, delta_tv = d, gamma_tv = g, rho_tv = rho,
+             theta_tv = th, vega_tv = v, teo_tv = teo, stringsAsFactors = FALSE)
+
+mercado <- rbind(
+  op("SPY",  "call",  759,   759.97, 0.0100, 21.28, 21.82,   50, 14.53,  0.53, 0.0092,  0.59, -0.16, 1.18,  18.29),
+  op("SPY",  "put",   759,   759.97, 0.0100, 16.07, 16.24,   96, 14.53, -0.47, 0.0092, -0.57, -0.14, 1.18,  16.16),
+  op("TLT",  "call",   81,    81.34, 0.0411,  1.78,  1.82,  721, 16.02,  0.55, 0.078,   0.065,-0.019, 0.13,   2.27),
+  op("TLT",  "put",    81,    81.34, 0.0411,  1.79,  1.82,  648, 16.02, -0.45, 0.078,  -0.059,-0.017, 0.13,   1.80),
+  op("XOM",  "call",  180,   183.21, 0.0225, 10.05, 10.40,  301, 30.57,  0.59, 0.018,   0.15, -0.079, 0.28,  10.50),
+  op("XOM",  "put",   180,   183.21, 0.0225,  6.90,  7.35,  140, 30.57, -0.41, 0.018,  -0.13, -0.074, 0.28,   7.00),
+  op("GLD",  "call",  366,   366.61, 0,       13.50, 13.80,   21, 20.63,  0.53, 0.013,   0.28, -0.11, 0.57,  12.40),
+  op("GLD",  "put",   366,   366.61, 0,       11.00, 11.30,   41, 20.63, -0.47, 0.013,  -0.28, -0.10, 0.57,  11.20),
+  op("SLV",  "call",   48,    48.72, 0,        3.30,  3.40,  518, 37.21,  0.57, 0.055,   0.038,-0.026, 0.075,  3.20),
+  op("SLV",  "put",    48,    48.72, 0,        2.40,  2.49,  702, 37.21, -0.43, 0.055,  -0.036,-0.024, 0.075,  2.43),
+  op("NVDA", "call",  210,   210.96, 0.0047, 14.20, 14.35, 1090, 39.24,  0.55, 0.012,   0.16, -0.12, 0.33,  13.50),
+  op("NVDA", "put",   210,   210.96, 0.0047, 12.05, 12.25, 1440, 39.24, -0.45, 0.012,  -0.17, -0.11, 0.33,  12.25),
+  op("ASML", "call", 1570,  1571.80, 0.0050, 102.90, 109.40,  16, 40.49,  0.54, 0.0016,  1.14, -0.91, 2.44, 101.20),
+  op("ASML", "put",  1570,  1571.80, 0.0050,  93.00,  97.90,  12, 40.49, -0.46, 0.0016, -1.26, -0.86, 2.44,  97.00),
+  op("AMD",  "call",  510,   516.79, 0,       49.65, 51.85,  535, 55.17,  0.57, 0.0035,  0.38, -0.40, 0.79,  48.00),
+  op("AMD",  "put",   510,   516.79, 0,       40.10, 41.05,  312, 55.17, -0.43, 0.0035, -0.40, -0.38, 0.79,  40.40)
+)
+
+mercado$mid     <- (mercado$bid + mercado$ask) / 2
+mercado$spread  <- (mercado$ask - mercado$bid) / mercado$mid * 100
+mercado$id      <- paste(mercado$activo, mercado$tipo)
+
+subyacentes <- data.frame(
+  activo = c("SPY", "TLT", "XOM", "GLD", "SLV", "NVDA", "ASML", "AMD"),
+  nombre = c("SPDR S&P 500 ETF", "iShares 20+ Year Treasury Bond ETF", "ExxonMobil",
+             "SPDR Gold Shares", "iShares Silver Trust", "NVIDIA", "ASML (ADR de NY)",
+             "Advanced Micro Devices"),
+  clase  = c("ETF", "ETF", "Acción", "ETF", "ETF", "Acción", "Acción", "Acción"),
+  stringsAsFactors = FALSE
+)
+subyacentes$spot <- mercado$S[match(subyacentes$activo, mercado$activo)]
+subyacentes$q    <- mercado$q[match(subyacentes$activo, mercado$activo)]
+subyacentes$iv   <- mercado$iv_tv[match(subyacentes$activo, mercado$activo)]
+activos <- subyacentes$activo
+```
+
+```{r tabla-subyacentes}
+kable(data.frame(subyacentes$activo, subyacentes$nombre, subyacentes$clase,
+                 subyacentes$spot, subyacentes$q * 100, subyacentes$iv),
+      digits = c(0, 0, 0, 2, 2, 2), format.args = list(big.mark = ","),
+      col.names = c("Activo", "Nombre", "Tipo", "Spot (USD)", "Dividend yield (%)",
+                    "IV TradingView (%)"),
+      caption = "Subyacentes del portafolio (cierre del 23-oct-2026)") %>%
+  kable_styling(bootstrap_options = c("striped", "condensed"), full_width = FALSE)
+```
+
+```{r tabla-cadenas}
+kable(data.frame(mercado$activo, mercado$tipo, mercado$K, mercado$bid, mercado$ask,
+                 mercado$mid, mercado$spread, mercado$vol, mercado$teo_tv),
+      digits = c(0, 0, 0, 2, 2, 3, 1, 0, 2), format.args = list(big.mark = ","),
+      col.names = c("Activo", "Tipo", "Strike", "Bid", "Ask", "Punto medio",
+                    "Spread (%)", "Volumen", "Precio teórico TV"),
+      caption = "Las 16 opciones capturadas (call y put del strike más cercano al dinero)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE, font_size = 12)
+```
+
+Se capturaron el call y el put de cada subyacente, en el strike más cercano al spot. La posición que se compra en cada activo es una de las dos; la otra sirve de contraste (paridad put-call y comparación del ejercicio anticipado entre calls y puts).
+
+## El modelo CRR
+
+En cada paso $\Delta t = T/N$ el precio sube por $u = e^{\sigma\sqrt{\Delta t}}$ o baja por $d = 1/u$, con probabilidad neutral al riesgo
+
+$$p = \frac{e^{(r-q)\Delta t} - d}{u - d}$$
+
+El dividendo $q$ entra en la deriva neutral al riesgo: el subyacente rinde $r - q$ en promedio. Se valora hacia atrás. En la opción americana cada nodo toma el mayor entre ejercer ya y continuar:
+
+$$f = \max\left( \text{ejercicio inmediato},\; e^{-r\Delta t}\,[\,p\,f_{\uparrow} + (1-p)\,f_{\downarrow}\,] \right)$$
+
+## Funciones
+
+```{r funciones}
+# Árbol CRR. Guarda los niveles 0..guardar con precio, continuación, valor y bandera de ejercicio.
+# Nodo (i, k): i = paso, k = número de bajas; S = S0 * u^(i-k) * d^k
+
+crr <- function(S0, K, r, q, sigma, T, N, tipo = "put", americana = TRUE, guardar = 2) {
+  dt   <- T / N
+  u    <- exp(sigma * sqrt(dt))
+  d    <- 1 / u
+  p    <- (exp((r - q) * dt) - d) / (u - d)
+  stopifnot(p > 0, p < 1)
+  disc <- exp(-r * dt)
+  sg   <- if (tipo == "call") 1 else -1
+  k    <- 0:N
+  V    <- pmax(sg * (S0 * u^(N - k) * d^k - K), 0)      # pago al vencimiento
+  niv  <- vector("list", guardar + 1); cont_l <- niv; ejer <- niv; intr_l <- niv
+  if (N <= guardar) {
+    niv[[N + 1]] <- V; intr_l[[N + 1]] <- V
+    cont_l[[N + 1]] <- rep(NA_real_, N + 1); ejer[[N + 1]] <- rep(FALSE, N + 1)
+  }
+  if (N >= 1) for (i in (N - 1):0) {
+    k    <- 0:i
+    cont <- disc * (p * V[1:(i + 1)] + (1 - p) * V[2:(i + 2)])
+    S_i  <- S0 * u^(i - k) * d^k
+    intr <- pmax(sg * (S_i - K), 0)
+    if (americana) {
+      ej <- intr > cont + 1e-10
+      V  <- pmax(cont, intr)
+    } else {
+      ej <- rep(FALSE, i + 1)
+      V  <- cont
+    }
+    if (i <= guardar) {
+      niv[[i + 1]] <- V; cont_l[[i + 1]] <- cont; ejer[[i + 1]] <- ej; intr_l[[i + 1]] <- intr
+    }
+  }
+  list(precio = V[1], V = niv, cont = cont_l, intr = intr_l, ejer = ejer,
+       u = u, d = d, p = p, dt = dt, N = N, S0 = S0)
+}
+
+# Griegas leídas del árbol (Hull, cap. 21). Theta por día, vega y rho por 1 punto.
+
+griegas.arbol <- function(S0, K, r, q, sigma, T, N = 500, tipo = "put", americana = TRUE) {
+  a  <- crr(S0, K, r, q, sigma, T, N, tipo, americana, guardar = 2)
+  f0 <- a$V[[1]]; f1 <- a$V[[2]]; f2 <- a$V[[3]]
+  u <- a$u; d <- a$d
+  S11 <- S0 * u;    S10 <- S0 * d
+  S22 <- S0 * u^2;  S21 <- S0;  S20 <- S0 * d^2
+  delta <- (f1[1] - f1[2]) / (S11 - S10)
+  gamma <- ((f2[1] - f2[2]) / (S22 - S21) - (f2[2] - f2[3]) / (S21 - S20)) /
+           (0.5 * (S22 - S20))
+  theta <- (f2[2] - f0) / (2 * a$dt) / 365
+  vega  <- crr(S0, K, r, q, sigma + 0.01, T, N, tipo, americana)$precio - a$precio
+  rho   <- crr(S0, K, r + 0.01, q, sigma, T, N, tipo, americana)$precio - a$precio
+  c(delta = delta, gamma = gamma, theta = theta, vega = vega, rho = rho)
+}
+
+# Black-Scholes-Merton europeo con dividendo continuo
+
+bs.precio <- function(S0, K, r, q, sigma, T, tipo = "put") {
+  d1 <- (log(S0 / K) + (r - q + sigma^2 / 2) * T) / (sigma * sqrt(T))
+  d2 <- d1 - sigma * sqrt(T)
+  if (tipo == "call") S0 * exp(-q * T) * pnorm(d1) - K * exp(-r * T) * pnorm(d2)
+  else K * exp(-r * T) * pnorm(-d2) - S0 * exp(-q * T) * pnorm(-d1)
+}
+
+bs.griegas <- function(S0, K, r, q, sigma, T, tipo = "put") {
+  d1 <- (log(S0 / K) + (r - q + sigma^2 / 2) * T) / (sigma * sqrt(T))
+  d2 <- d1 - sigma * sqrt(T)
+  es_call <- tipo == "call"
+  delta <- if (es_call) exp(-q * T) * pnorm(d1) else exp(-q * T) * (pnorm(d1) - 1)
+  gamma <- exp(-q * T) * dnorm(d1) / (S0 * sigma * sqrt(T))
+  vega  <- S0 * exp(-q * T) * dnorm(d1) * sqrt(T) / 100
+  th_a  <- -S0 * exp(-q * T) * dnorm(d1) * sigma / (2 * sqrt(T)) +
+    if (es_call) -r * K * exp(-r * T) * pnorm(d2) + q * S0 * exp(-q * T) * pnorm(d1)
+    else          r * K * exp(-r * T) * pnorm(-d2) - q * S0 * exp(-q * T) * pnorm(-d1)
+  rho <- (if (es_call) K * T * exp(-r * T) * pnorm(d2) else -K * T * exp(-r * T) * pnorm(-d2)) / 100
+  c(delta = delta, gamma = gamma, theta = th_a / 365, vega = vega, rho = rho)
+}
+
+# Volatilidad implícita del ÁRBOL: la sigma con la que el árbol americano reproduce el precio
+
+iv.arbol <- function(precio, S0, K, r, q, T, tipo, N = 200) {
+  f <- function(s) crr(S0, K, r, q, s, T, N, tipo, TRUE, guardar = 0)$precio - precio
+  res <- try(uniroot(f, interval = c(0.02, 3), tol = 1e-8), silent = TRUE)
+  if (inherits(res, "try-error")) NA_real_ else res$root
+}
+
+# Distribución del precio a vencimiento que implica el árbol (binomial con p neutral)
+
+distribucion.terminal <- function(S0, r, q, sigma, T, N = 500) {
+  dt <- T / N; u <- exp(sigma * sqrt(dt)); d <- 1 / u
+  p  <- (exp((r - q) * dt) - d) / (u - d)
+  k  <- 0:N
+  data.frame(S = S0 * u^(N - k) * d^k, prob = dbinom(k, N, 1 - p))
+}
+
+# Cuantil del precio en el día t: límite continuo del árbol (lognormal con deriva r - q),
+# que evita el zigzag por la paridad de los pasos discretos
+
+cuantil.arbol <- function(S0, r, q, sigma, i, alfa, N = 56, T = T_anios) {
+  t <- i / N * T
+  if (t == 0) return(S0)
+  S0 * exp((r - q - sigma^2 / 2) * t + qnorm(alfa) * sigma * sqrt(t))
+}
+
+# Formatos
+
+fmt <- function(x, d = 0) formatC(x, format = "f", digits = d, big.mark = ",")
+
+# Inserción de capturas: si el archivo no está, avisa sin romper el knit
+
+mostrar.imagenes <- function(archivos) {
+  existen <- archivos[file.exists(archivos)]
+  faltan  <- archivos[!file.exists(archivos)]
+  if (length(faltan) > 0) {
+    cat("Capturas no encontradas en la carpeta del .Rmd:\n")
+    cat(paste("  -", faltan, collapse = "\n"), "\n")
+  }
+  if (length(existen) > 0) knitr::include_graphics(existen)
+}
+```
+
+## Validación del código
+
+Antes de usar datos reales, el árbol debe reproducir el ejemplo del libro (Hull, cap. 21): put americana con $S_0 = 50$, $K = 52$, $r = 5\%$, $\sigma = 30\%$, $T = 2$ años y $N = 2$ pasos.
+
+```{r hull}
+h_am <- crr(50, 52, 0.05, 0, 0.30, 2, 2, "put", TRUE,  guardar = 2)
+h_eu <- crr(50, 52, 0.05, 0, 0.30, 2, 2, "put", FALSE, guardar = 2)
+
+hull <- data.frame(
+  Concepto = c("Put americana", "Put europea", "Prima de ejercicio anticipado",
+               "Precio del nodo donde conviene ejercer (paso 1, baja)"),
+  Valor = round(c(h_am$precio, h_eu$precio, h_am$precio - h_eu$precio, 50 * h_am$d), 4)
+)
+kable(hull, col.names = c("Concepto", "Valor")) %>%
+  kable_styling(bootstrap_options = c("striped", "condensed"), full_width = FALSE)
+```
+
+La put americana vale `r round(h_am$precio, 4)`, que coincide con el valor del libro (7.4284), y la europea `r round(h_eu$precio, 4)`. La diferencia, `r round(h_am$precio - h_eu$precio, 4)`, es el valor de poder ejercer antes: en el nodo donde el precio cae a `r round(50 * h_am$d, 2)` al cabo de un año conviene cobrar el strike de inmediato.
+
+Más pruebas (convergencia a Black-Scholes, paridad y Griegas) en el anexo.
+
+## Resultados del árbol por opción
+
+```{r motor}
+calc <- do.call(rbind, lapply(seq_len(nrow(mercado)), function(i) {
+  x <- mercado[i, ]
+  s <- x$iv_tv / 100
+  am <- crr(x$S, x$K, rf, x$q, s, T_anios, N_precio, x$tipo, TRUE)
+  eu <- crr(x$S, x$K, rf, x$q, s, T_anios, N_precio, x$tipo, FALSE)
+  a4 <- crr(x$S, x$K, rf, x$q, s, T_anios, N_nodos, x$tipo, TRUE, guardar = N_nodos)
+  g  <- griegas.arbol(x$S, x$K, rf, x$q, s, T_anios, N_precio, x$tipo, TRUE)
+  data.frame(id = x$id, activo = x$activo, tipo = x$tipo,
+             p_am = am$precio, p_eu = eu$precio,
+             p_bs = bs.precio(x$S, x$K, rf, x$q, s, T_anios, x$tipo),
+             p_am4 = a4$precio, u = am$u, d = am$d, p = am$p,
+             u4 = a4$u, d4 = a4$d, p4 = a4$p,
+             iv_arbol = iv.arbol(x$mid, x$S, x$K, rf, x$q, T_anios, x$tipo) * 100,
+             delta = g["delta"], gamma = g["gamma"], theta = g["theta"],
+             vega = g["vega"], rho = g["rho"], row.names = NULL)
+}))
+calc$prima_ea  <- calc$p_am - calc$p_eu
+calc$prima_pct <- calc$prima_ea / calc$p_am * 100
+M <- cbind(mercado, calc[, setdiff(names(calc), c("id", "activo", "tipo"))])
+rownames(M) <- M$id
+```
+
+```{r tabla-modelo}
+t1 <- data.frame(M$activo, M$tipo, M$iv_tv, M$iv_arbol, M$p_am, M$p_eu, M$p_bs,
+                 M$prima_ea, M$mid, M$teo_tv)
+kable(t1, digits = c(0, 0, 2, 2, 3, 3, 3, 4, 3, 2), row.names = FALSE,
+      col.names = c("Activo", "Tipo", "IV TradingView (%)", "IV del árbol (%)",
+                    "Americana (N=500)", "Europea (N=500)", "Black-Scholes",
+                    "Prima ejercicio anticipado", "Punto medio mercado",
+                    "Teórico TradingView"),
+      caption = "Precios por acción con la IV de TradingView; IV del árbol = la que reproduce el punto medio") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE, font_size = 12)
+```
+
+La **prima de ejercicio anticipado** es la diferencia entre la americana y la europea del mismo árbol. En la tabla se ve que `r sum(M$tipo == "call" & M$q == 0 & abs(M$prima_ea) < 1e-8)` de los `r sum(M$tipo == "call")` calls tienen prima exactamente cero: son los de GLD, SLV y AMD, que no pagan dividendo y, con $q = 0$, nunca conviene ejercer un call antes del vencimiento. El mayor valor lo tiene `r M$id[which.max(M$prima_pct)]`, con `r round(max(M$prima_pct), 2)` % del valor de la opción.
+
+```{r tabla-arbol-parametros}
+t2 <- data.frame(M$id, M$iv_tv, M$q * 100, M$u4, M$d4, M$p4, M$u, M$d, M$p, M$p_am4, M$p_am)
+kable(t2, digits = c(0, 2, 2, 4, 4, 4, 5, 5, 5, 3, 3), row.names = FALSE,
+      col.names = c("Opción", "σ (%)", "q (%)", "u (N=4)", "d (N=4)", "p (N=4)",
+                    "u (N=500)", "d (N=500)", "p (N=500)",
+                    "Precio N=4", "Precio N=500"),
+      caption = "Parámetros del árbol: el de 4 pasos se dibuja, el de 500 valúa") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE, font_size = 12)
+```
+
+**Cómo se lee.** Con 4 pasos cada paso dura 14 días, el árbol es grueso y sirve para ver los nodos; con 500 pasos cada uno dura menos de una hora de calendario y el precio converge. La diferencia entre las dos últimas columnas es el error de discretización del árbol pequeño. La probabilidad $p$ es cercana a 0.5 en todos los casos y baja ligeramente cuando el dividendo $q$ es mayor, porque el rendimiento neutral al riesgo $r - q$ es menor.
+
+## Estrategias y asignación del portafolio
+
+### Posiciones propuestas
+
+```{r posiciones}
+# Una posición por subyacente. Todas son compras de opciones (pérdida máxima = prima pagada).
+# contratos_manual permite fijar la cantidad a mano; con NA se aplica la regla
+# "prima objetivo por posición": contratos = max(1, round(presupuesto / costo de un contrato)).
+
+pos <- data.frame(
+  activo = activos,
+  tipo   = c("put", "call", "call", "call", "put", "call", "call", "put"),
+  contratos_manual = c(NA, NA, NA, NA, NA, NA, NA, NA),
+  stringsAsFactors = FALSE
+)
+pos$id <- paste(pos$activo, pos$tipo)
+Mp <- M[pos$id, ]
+pos$K <- Mp$K; pos$S <- Mp$S; pos$q <- Mp$q; pos$bid <- Mp$bid; pos$ask <- Mp$ask
+pos$iv <- Mp$iv_tv
+pos$contratos <- ifelse(is.na(pos$contratos_manual),
+                        pmax(1, round(presupuesto_pos / (pos$ask * mult))),
+                        pos$contratos_manual)
+pos$cantidad <- pos$contratos * mult
+pos$costo    <- pos$cantidad * pos$ask
+pos$pct_cap  <- pos$costo / capital * 100
+pos$equilibrio <- ifelse(pos$tipo == "call", pos$K + pos$ask, pos$K - pos$ask)
+pos$mov_req    <- (pos$equilibrio / pos$S - 1) * 100
+pos$costo_ejec <- pos$cantidad * (pos$ask - pos$bid) / 2
+rownames(pos) <- pos$activo
+```
+
+```{r tabla-posiciones}
+tp <- data.frame(
+  Activo = pos$activo,
+  Posicion = paste("Compra", pos$tipo, pos$K),
+  Vencimiento = format(fecha_vencimiento, "%d-%b-%Y"),
+  Contratos = pos$contratos,
+  Prima = pos$ask,
+  Costo = pos$costo,
+  Pct = pos$pct_cap,
+  Equilibrio = pos$equilibrio,
+  Mov = pos$mov_req,
+  Spread = Mp$spread,
+  Volumen = Mp$vol
+)
+tp <- rbind(tp, data.frame(Activo = "Total", Posicion = "", Vencimiento = "",
+                           Contratos = sum(pos$contratos), Prima = NA,
+                           Costo = sum(pos$costo), Pct = sum(pos$pct_cap),
+                           Equilibrio = NA, Mov = NA, Spread = NA, Volumen = NA))
+kable(tp, digits = c(0, 0, 0, 0, 2, 0, 1, 2, 2, 1, 0), row.names = FALSE,
+      format.args = list(big.mark = ","),
+      col.names = c("Activo", "Posición", "Vencimiento", "Contratos",
+                    "Prima de entrada (ask)", "Costo (USD)", "% del capital",
+                    "Equilibrio", "Movimiento requerido (%)", "Spread (%)", "Volumen"),
+      caption = "Tabla de operaciones: entrada al ask, cuenta de 100,000 USD") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE, font_size = 12) %>%
+  row_spec(nrow(tp), bold = TRUE)
+```
+
+**Regla de asignación.** Cada posición busca una prima de unos `r fmt(presupuesto_pos)` USD, que es `r round(presupuesto_pos / capital * 100, 1)` % del capital, con un mínimo de un contrato. Así ninguna posición dominaría la cuenta, salvo que un solo contrato ya cueste más que el presupuesto. Eso pasa en `r paste(pos$activo[pos$costo > 1.5 * presupuesto_pos], collapse = ", ")`: un contrato cuesta `r fmt(pos["ASML", "costo"])` USD en ASML, que es `r round(pos["ASML", "pct_cap"], 1)` % del capital y `r round(pos["ASML", "costo"] / sum(pos$costo) * 100)` % de la prima total del portafolio. Es la única posición en la que la cantidad mínima ya supera el presupuesto, y además la menos líquida (volumen de 16 y 12 contratos). Si el equipo quiere un portafolio más parejo, basta fijar `contratos_manual` o cambiar ASML por otra opción.
+
+La dirección de cada posición responde al papel que cumple en el conjunto:
+
+```{r tabla-logica, echo=FALSE}
+logica <- data.frame(
+  Activo = c("SPY", "TLT", "XOM", "GLD", "SLV", "NVDA", "ASML", "AMD"),
+  Posicion = c("Put 759", "Call 81", "Call 180", "Call 366", "Put 48",
+               "Call 210", "Call 1570", "Put 510"),
+  Papel = c(
+    "Cobertura del mercado amplio. Es el subyacente de menor volatilidad del lote (IV de 14.5 %), así que la protección es la más barata en relación con el nocional de 76,000 USD por contrato.",
+    "Bonos largos con dividendo mensual alto (4.11 %). Con $q$ mayor que $r$ es donde un call americano puede tener prima de ejercicio anticipado positiva.",
+    "Energía. Dividendo de 2.25 % y reporte de resultados a 6 días: el call incluye ese evento dentro de su vida. Subió 2.79 % en la sesión.",
+    "Oro, sin dividendo. Sirve de referencia: un call sin dividendo debe tener prima de ejercicio anticipado cero.",
+    "Plata, sin dividendo. Una put sin dividendo es el caso donde el ejercicio anticipado depende solo de la tasa de interés.",
+    "Semiconductores de gran capitalización y la cadena más líquida de las tres acciones (1,090 y 1,440 contratos). Reporta en 32 días, dentro del vencimiento.",
+    "Cuello de botella de la cadena de semiconductores. Ya reportó el 13 de octubre; es la opción menos líquida del portafolio.",
+    "Contrapeso bajista y la volatilidad implícita más alta del lote (55.2 %). Es una put fuera del dinero, así que toda su prima es valor temporal. Reporta en 10 días, dentro de la vida de la opción."
+  )
+)
+kable(logica, col.names = c("Activo", "Posición", "Papel en el portafolio"),
+      caption = "Lógica de cada posición (las fechas de reporte salen de la ficha de TradingView del 24-oct-2026)") %>%
+  kable_styling(bootstrap_options = c("striped", "condensed"), full_width = TRUE,
+                font_size = 12)
+```
+
+El portafolio queda con cinco calls (TLT, XOM, GLD, NVDA y ASML) y tres puts (SPY, SLV y AMD). Las cinco calls apuestan a que el precio suba por encima del equilibrio; las tres puts compensan en la cola bajista. No se vende ninguna opción, de modo que **la pérdida máxima es exactamente la prima pagada**.
+
+```{r griegas-posiciones}
+G <- data.frame(
+  Activo = pos$activo,
+  delta_usd = pos$cantidad * Mp$delta * pos$S,
+  gamma_usd = pos$cantidad * Mp$gamma * pos$S^2 * 0.01,
+  vega_usd  = pos$cantidad * Mp$vega,
+  theta_usd = pos$cantidad * Mp$theta,
+  rho_usd   = pos$cantidad * Mp$rho
+)
+Gt <- rbind(G, data.frame(Activo = "Portafolio", t(colSums(G[, -1]))))
+kable(Gt, digits = c(0, 0, 0, 1, 1, 1), row.names = FALSE,
+      format.args = list(big.mark = ","),
+      col.names = c("Posición", "Delta (USD)", "Gamma (USD por 1 %)",
+                    "Vega (USD por 1 pto)", "Theta (USD por día)", "Rho (USD por 1 pto)"),
+      caption = "Griegas del árbol en dólares (cantidad = contratos x 100)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE, font_size = 12) %>%
+  row_spec(nrow(Gt), bold = TRUE)
+```
+
+```{r grafica-asignacion, fig.width = 11, fig.height = 5.5}
+colores <- c(SPY = "steelblue", TLT = "slategray", XOM = "darkorange", GLD = "goldenrod",
+             SLV = "gray55", NVDA = "seagreen", ASML = "purple", AMD = "firebrick")
+par(mfrow = c(1, 3), mar = c(5, 4.5, 4, 1))
+barplot(pos$costo, names.arg = pos$activo, col = colores[pos$activo],
+        main = "Prima pagada (USD)", ylab = "USD", las = 2)
+barplot(G$delta_usd, names.arg = G$Activo, col = colores[G$Activo],
+        main = "Delta (USD)", ylab = "USD", las = 2); abline(h = 0)
+barplot(G$theta_usd, names.arg = G$Activo, col = colores[G$Activo],
+        main = "Theta (USD por día)", ylab = "USD", las = 2); abline(h = 0)
+par(mfrow = c(1, 1))
+```
+
+```{r riesgo}
+riesgo <- data.frame(
+  Concepto = c("Capital de la cuenta", "Prima total pagada = pérdida máxima",
+               "Pérdida máxima / capital", "Delta del portafolio / capital",
+               "Costo de ejecución de entrada (medio spread)",
+               "Costo de ejecución atribuible a ASML", "Theta del portafolio por día"),
+  Valor = c(paste0(fmt(capital), " USD"), paste0(fmt(sum(pos$costo)), " USD"),
+            paste0(round(sum(pos$costo) / capital * 100, 1), " %"),
+            paste0(round(sum(G$delta_usd) / capital * 100), " %"),
+            paste0(fmt(sum(pos$costo_ejec)), " USD"),
+            paste0(fmt(pos["ASML", "costo_ejec"]), " USD (",
+                   round(pos["ASML", "costo_ejec"] / sum(pos$costo_ejec) * 100), " %)"),
+            paste0(fmt(sum(G$theta_usd), 1), " USD"))
+)
+kable(riesgo, align = c("l", "r"),
+      caption = "Al ser todas las posiciones compras, la prima pagada es el riesgo total") %>%
+  kable_styling(bootstrap_options = c("striped", "condensed"), full_width = FALSE)
+```
+
+## Árboles binomiales por subyacente
+
+Para cada subyacente se dibuja el **árbol de 4 pasos** de la opción que se compra, con el precio del subyacente arriba de cada nodo y el valor de la opción abajo. Los nodos en rojo son aquellos donde **conviene ejercer de inmediato**. Debajo va la tabla de los 15 nodos con valor intrínseco, valor de continuación y decisión. El precio final de cada opción viene del árbol de 500 pasos.
+
+```{r funciones-arbol}
+dibuja.arbol <- function(id, titulo) {
+  x <- M[id, ]
+  a <- crr(x$S, x$K, rf, x$q, x$iv_tv / 100, T_anios, N_nodos, x$tipo, TRUE, guardar = N_nodos)
+  N <- a$N
+  dec <- if (x$S < 100) 2 else 1
+  par(mar = c(3, 1, 3.5, 1))
+  plot(NULL, xlim = c(-0.35, N + 0.45), ylim = c(-N - 0.7, N + 0.7), axes = FALSE,
+       xlab = "", ylab = "", main = titulo)
+  for (i in 0:(N - 1)) for (k in 0:i) {
+    y <- i - 2 * k
+    segments(i, y, i + 1, y + 1, col = "gray75"); segments(i, y, i + 1, y - 1, col = "gray75")
+  }
+  for (i in 0:N) for (k in 0:i) {
+    y  <- i - 2 * k
+    S  <- x$S * a$u^(i - k) * a$d^k
+    v  <- a$V[[i + 1]][k + 1]
+    ej <- a$ejer[[i + 1]][k + 1]
+    if (ej) rect(i - 0.36, y - 0.52, i + 0.36, y + 0.52, border = "firebrick", lwd = 1.5)
+    text(i, y + 0.2, formatC(S, format = "f", digits = dec, big.mark = ","), cex = 0.78)
+    text(i, y - 0.25, formatC(v, format = "f", digits = 2), cex = 0.78,
+         col = ifelse(ej, "firebrick", "darkgreen"), font = ifelse(ej, 2, 1))
+  }
+  axis(1, at = 0:N, labels = paste0("Paso ", 0:N, "\n(día ", round(0:N * T_anios / N * 365), ")"),
+       tick = FALSE, cex.axis = 0.85)
+  legend("topleft", bty = "n", cex = 0.8, text.col = c("black", "darkgreen", "firebrick"),
+         legend = c("Arriba: precio del subyacente", "Abajo: valor de la opción",
+                    "Rojo con marco: ejercer ya"))
+}
+
+tabla.nodos <- function(id) {
+  x <- M[id, ]
+  a <- crr(x$S, x$K, rf, x$q, x$iv_tv / 100, T_anios, N_nodos, x$tipo, TRUE, guardar = N_nodos)
+  filas <- list()
+  for (i in 0:N_nodos) for (k in 0:i) {
+    filas[[length(filas) + 1]] <- data.frame(
+      Paso = i, Bajas = k, S = x$S * a$u^(i - k) * a$d^k,
+      Intrinseco = a$intr[[i + 1]][k + 1], Continuacion = a$cont[[i + 1]][k + 1],
+      Valor = a$V[[i + 1]][k + 1],
+      Decision = if (i == N_nodos) "Vencimiento" else if (a$ejer[[i + 1]][k + 1]) "EJERCER" else "Continuar")
+  }
+  d <- do.call(rbind, filas)
+  d <- d[d$Paso <= 3 | d$Decision == "EJERCER", ]
+  kable(d, digits = c(0, 0, 2, 3, 3, 3, 0), row.names = FALSE,
+        format.args = list(big.mark = ","),
+        col.names = c("Paso", "Nº de bajas", "Precio S", "Valor intrínseco",
+                      "Valor de continuación", "Valor de la opción", "Decisión"),
+        caption = paste0("Nodos de los pasos 0 a 3 (y cualquier nodo de ejercicio): ", id)) %>%
+    kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                  full_width = FALSE, font_size = 11) %>%
+    row_spec(which(d$Decision == "EJERCER"), bold = TRUE, color = "firebrick")
+}
+
+tabla.opcion <- function(a) {
+  filas <- M[M$activo == a, ]
+  d <- data.frame(
+    Opcion = filas$id, Bid = filas$bid, Ask = filas$ask, Mid = filas$mid,
+    ArbolAm = filas$p_am, ArbolEu = filas$p_eu, Prima = filas$prima_ea,
+    Delta = filas$delta, DeltaTV = filas$delta_tv,
+    Gamma = filas$gamma, GammaTV = filas$gamma_tv,
+    Theta = filas$theta, ThetaTV = filas$theta_tv,
+    Vega = filas$vega, VegaTV = filas$vega_tv,
+    Rho = filas$rho, RhoTV = filas$rho_tv)
+  kable(d, digits = c(0, 2, 2, 3, 3, 3, 4, 3, 2, 4, 4, 3, 3, 3, 3, 3, 3), row.names = FALSE,
+        col.names = c("Opción", "Bid", "Ask", "Mid", "Árbol am.", "Árbol eur.",
+                      "Prima EA", "Delta", "Delta TV", "Gamma", "Gamma TV",
+                      "Theta", "Theta TV", "Vega", "Vega TV", "Rho", "Rho TV"),
+        caption = "Precios por acción y Griegas: árbol (N=500) contra TradingView") %>%
+    kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                  full_width = FALSE, font_size = 11)
+}
+
+# Texto de conclusión generado con los resultados, para que no se desfase del código
+
+conclusion <- function(a) {
+  p  <- pos[a, ]; x <- M[p$id, ]
+  dist <- distribucion.terminal(x$S, rf, x$q, x$iv_tv / 100, T_anios, N_precio)
+  pago <- if (x$tipo == "call") pmax(dist$S - x$K, 0) else pmax(x$K - dist$S, 0)
+  p_itm <- sum(dist$prob[pago > 0]) * 100
+  p_gan <- sum(dist$prob[pago > x$ask]) * 100
+  dif   <- (x$mid / x$p_am - 1) * 100
+  ea <- if (x$tipo == "call" && x$q == 0) {
+    "Como no paga dividendo, ejercer un call antes del vencimiento nunca conviene y la americana vale exactamente lo mismo que la europea."
+  } else if (x$prima_pct < 0.5) {
+    sprintf("La prima de ejercicio anticipado es de %s USD por acción (%s %% del valor): a 56 días es económicamente despreciable.",
+            formatC(x$prima_ea, format = "f", digits = 4), formatC(x$prima_pct, format = "f", digits = 2))
+  } else {
+    sprintf("La prima de ejercicio anticipado es de %s USD por acción (%s %% del valor): pequeña, pero positiva y medible.",
+            formatC(x$prima_ea, format = "f", digits = 3), formatC(x$prima_pct, format = "f", digits = 2))
+  }
+  sprintf(paste0("Con %d contrato(s) la prima pagada al ask es de %s USD (%s %% del capital). ",
+                 "El equilibrio al vencimiento está en %s, un %s %% %s del spot. ",
+                 "El árbol, con la IV de TradingView (%s %%), valúa la opción en %s por acción contra un punto medio de mercado de %s (el mercado cotiza %s %% %s que el modelo). %s ",
+                 "Bajo la medida neutral al riesgo, la probabilidad de terminar en dinero es de %s %% y la de ganar neto de prima, de %s %%."),
+          p$contratos, fmt(p$costo), formatC(p$pct_cap, format = "f", digits = 1),
+          fmt(p$equilibrio, 2), formatC(abs(p$mov_req), format = "f", digits = 1),
+          ifelse(p$mov_req >= 0, "arriba", "abajo"),
+          formatC(x$iv_tv, format = "f", digits = 2), formatC(x$p_am, format = "f", digits = 3),
+          formatC(x$mid, format = "f", digits = 3), formatC(abs(dif), format = "f", digits = 1),
+          ifelse(dif >= 0, "más caro", "más barato"), ea,
+          formatC(p_itm, format = "f", digits = 0), formatC(p_gan, format = "f", digits = 0))
+}
+```
+
+### SPY: put 759 (cobertura)
+
+Compra de puts con strike 759, el más cercano al spot de 759.97. Es la cobertura del portafolio.
+
+```{r spy-codigo}
+tabla.opcion("SPY")
+```
+
+```{r spy-arbol, fig.width = 10, fig.height = 5.2}
+dibuja.arbol("SPY put", "SPY put 759: árbol de 4 pasos (σ = 14.53 %, q = 1.00 %)")
+```
+
+```{r spy-nodos}
+tabla.nodos("SPY put")
+```
+
+**Conclusión.** `r conclusion("SPY")` En el árbol de 4 pasos el ejercicio anticipado aparece solo en los nodos con varias bajas seguidas, cuando el precio queda muy por debajo del strike y la tasa de 3.94 % hace más valioso cobrar el strike hoy que esperar.
+
+### TLT: call 81
+
+Compra de calls con strike 81, el más cercano al spot de 81.34. TLT paga un dividendo alto, de 4.11 % indicado, y es el caso donde el dividendo pesa más que la tasa.
+
+```{r tlt-codigo}
+tabla.opcion("TLT")
+```
+
+```{r tlt-arbol, fig.width = 10, fig.height = 5.2}
+dibuja.arbol("TLT call", "TLT call 81: árbol de 4 pasos (σ = 16.02 %, q = 4.11 %)")
+```
+
+```{r tlt-nodos}
+tabla.nodos("TLT call")
+```
+
+**Conclusión.** `r conclusion("TLT")` Aquí $q$ (4.11 %) es mayor que $r$ (3.94 %), que es la condición bajo la cual un call americano puede ejercerse antes: cobrar el dividendo vale más que los intereses que se ganan sobre el strike. La prima es pequeña porque el call está casi en el dinero y el plazo es corto; crece cuanto más profundo esté en dinero.
+
+Hay un detalle de calidad de datos. El call cotiza en `r round(M["TLT call", "mid"], 2)` contra un precio teórico de TradingView de `r M["TLT call", "teo_tv"]` y un árbol de `r round(M["TLT call", "p_am"], 2)`, mientras que la put coincide con su teórico. La captura del call tiene la hora de última actualización 14:14 y la de la put 13:59, así que probablemente el call quedó con una cotización rezagada. Se deja asentado, pero no se corrige.
+
+### XOM: call 180
+
+Compra de calls con strike 180, el más cercano al spot de 183.21 (queda 1.8 % dentro del dinero). XOM subió 2.79 % en la sesión y su reporte de resultados es en 6 días.
+
+```{r xom-codigo}
+tabla.opcion("XOM")
+```
+
+```{r xom-arbol, fig.width = 10, fig.height = 5.2}
+dibuja.arbol("XOM call", "XOM call 180: árbol de 4 pasos (σ = 30.57 %, q = 2.25 %)")
+```
+
+```{r xom-nodos}
+tabla.nodos("XOM call")
+```
+
+**Conclusión.** `r conclusion("XOM")` El call está dentro del dinero, pero de la prima de `r fmt(M["XOM call", "ask"], 2)` solo `r fmt(M["XOM call", "S"] - M["XOM call", "K"], 2)` (`r round((M["XOM call", "S"] - M["XOM call", "K"]) / M["XOM call", "ask"] * 100)` %) es valor intrínseco; el resto es valor temporal, que se perdería al ejercer. Por eso, aunque ya esté en dinero, no conviene ejercer antes: el dividendo de 2.25 % es menor que la tasa de 3.94 %. El reporte cae antes del vencimiento, así que la IV de 30.57 % incluye ese evento.
+
+### GLD: call 366
+
+Compra de calls con strike 366, el más cercano al spot de 366.61. GLD no paga dividendo.
+
+```{r gld-codigo}
+tabla.opcion("GLD")
+```
+
+```{r gld-arbol, fig.width = 10, fig.height = 5.2}
+dibuja.arbol("GLD call", "GLD call 366: árbol de 4 pasos (σ = 20.63 %, q = 0)")
+```
+
+```{r gld-nodos}
+tabla.nodos("GLD call")
+```
+
+**Conclusión.** `r conclusion("GLD")` Es la posición de control: sin dividendo, el árbol americano y el europeo coinciden, y la tabla de nodos no marca ningún nodo de ejercicio. La liquidez es la más baja de los ETF (21 contratos de volumen en el call).
+
+### SLV: put 48
+
+Compra de puts con strike 48, el más cercano al spot de 48.72. SLV no paga dividendo y su IV de 37.21 % es la más alta entre los ETF.
+
+```{r slv-codigo}
+tabla.opcion("SLV")
+```
+
+```{r slv-arbol, fig.width = 10, fig.height = 5.2}
+dibuja.arbol("SLV put", "SLV put 48: árbol de 4 pasos (σ = 37.21 %, q = 0)")
+```
+
+```{r slv-nodos}
+tabla.nodos("SLV put")
+```
+
+**Conclusión.** `r conclusion("SLV")` Con $q = 0$ el único motivo para ejercer una put antes es cobrar el strike y ponerlo a ganar intereses, de modo que la prima depende directamente de la tasa y del plazo. Aun así, la prima relativa de SLV (`r round(M["SLV put", "prima_pct"], 2)` %) es menor que la de GLD (`r round(M["GLD put", "prima_pct"], 2)` %) y la de SPY (`r round(M["SPY put", "prima_pct"], 2)` %): a mayor volatilidad, más valor temporal se pierde al ejercer, y eso reduce el atractivo de hacerlo.
+
+### NVDA: call 210
+
+Compra de calls con strike 210, a 0.5 % por debajo del spot de 210.96. Es la cadena más líquida de las tres acciones. Su próximo reporte, según TradingView, es en 32 días, dentro de la vida de la opción.
+
+```{r nvda-codigo}
+tabla.opcion("NVDA")
+```
+
+```{r nvda-arbol, fig.width = 10, fig.height = 5.2}
+dibuja.arbol("NVDA call", "NVDA call 210: árbol de 4 pasos (σ = 39.24 %, q = 0.47 %)")
+```
+
+```{r nvda-nodos}
+tabla.nodos("NVDA call")
+```
+
+**Conclusión.** `r conclusion("NVDA")` El dividendo de 0.47 % es mucho menor que la tasa, así que para el call el ejercicio anticipado prácticamente no existe, y la tabla de nodos no marca ningún nodo de ejercicio.
+
+### ASML: call 1570
+
+Compra de calls con strike 1,570, el más cercano al spot de 1,571.80. Cada contrato controla 100 acciones de un título de casi 1,600 dólares, por eso un solo contrato ya cuesta `r fmt(pos["ASML", "costo"])` USD.
+
+```{r asml-codigo}
+tabla.opcion("ASML")
+```
+
+```{r asml-arbol, fig.width = 10, fig.height = 5.2}
+dibuja.arbol("ASML call", "ASML call 1570: árbol de 4 pasos (σ = 40.49 %, q = 0.50 %)")
+```
+
+```{r asml-nodos}
+tabla.nodos("ASML call")
+```
+
+**Conclusión.** `r conclusion("ASML")` El spread del call es de `r round(M["ASML call", "spread"], 1)` % y el volumen del día fue de 16 contratos, así que el costo de entrar y salir pesa más que la diferencia entre el modelo y el mercado (`r fmt(pos["ASML", "costo_ejec"])` USD de medio spread contra `r fmt(pos["ASML", "cantidad"] * abs(M["ASML call", "mid"] - M["ASML call", "p_am"]))` USD entre el punto medio y el árbol). Ese costo de ejecución, `r fmt(pos["ASML", "costo_ejec"])` USD de medio spread, es `r round(pos["ASML", "costo_ejec"] / sum(pos$costo_ejec) * 100)` % del costo total de entrada del portafolio.
+
+### AMD: put 510
+
+Compra de puts con strike 510, a 1.3 % por debajo del spot de 516.79 (queda fuera del dinero). AMD no paga dividendo y tiene la IV más alta del portafolio, de 55.17 %.
+
+```{r amd-codigo}
+tabla.opcion("AMD")
+```
+
+```{r amd-arbol, fig.width = 10, fig.height = 5.2}
+dibuja.arbol("AMD put", "AMD put 510: árbol de 4 pasos (σ = 55.17 %, q = 0)")
+```
+
+```{r amd-nodos}
+tabla.nodos("AMD put")
+```
+
+**Conclusión.** `r conclusion("AMD")` Es la put con mayor volatilidad del lote, así que toda su prima es valor temporal (el spot está arriba del strike), que se perdería al ejercer. En el árbol de 4 pasos hay nodos de ejercicio solo en los caminos de varias bajas seguidas.
+
+**Reporte de AMD.** La ficha de TradingView del 24-oct-2026 marca el próximo reporte en 10 días (alrededor del 3 de noviembre), dentro de la vida de la opción. La IV de 55.17 % incluye ese evento, lo que explica que sea la más alta del lote; después del reporte esa volatilidad suele bajar, y la put perdería valor por vega aunque el precio se moviera a favor. La misma ficha muestra que AMD no paga dividendo, lo que confirma q = 0.
+
+## Forecast: qué dice el árbol sobre el precio a vencimiento
+
+El árbol de 500 pasos define una distribución del precio a vencimiento, que es una binomial con la probabilidad neutral $p$. Con ella se calculan los percentiles, la probabilidad de terminar en dinero y la de ganar neto de prima. Son probabilidades **neutrales al riesgo**: el precio crece a $r - q$ y no incorpora ninguna opinión direccional.
+
+```{r forecast-tabla}
+fc <- do.call(rbind, lapply(seq_len(nrow(pos)), function(i) {
+  p <- pos[i, ]; x <- M[p$id, ]
+  dist <- distribucion.terminal(x$S, rf, x$q, x$iv_tv / 100, T_anios, N_precio)
+  dist <- dist[order(dist$S), ]
+  cum  <- cumsum(dist$prob)
+  qs   <- sapply(c(0.05, 0.25, 0.5, 0.75, 0.95), function(a) dist$S[which(cum >= a)[1]])
+  pago <- if (x$tipo == "call") pmax(dist$S - x$K, 0) else pmax(x$K - dist$S, 0)
+  data.frame(Activo = p$activo, Posicion = paste(p$tipo, p$K),
+             Esperado = sum(dist$S * dist$prob), P5 = qs[1], P25 = qs[2], P50 = qs[3],
+             P75 = qs[4], P95 = qs[5],
+             ITM = sum(dist$prob[pago > 0]) * 100,
+             Ganar = sum(dist$prob[pago > p$ask]) * 100,
+             PagoEsp = sum(pago * dist$prob),
+             Prima = p$ask)
+}))
+kable(fc, digits = c(0, 0, 2, 2, 2, 2, 2, 2, 1, 1, 2, 2), row.names = FALSE,
+      format.args = list(big.mark = ","),
+      col.names = c("Activo", "Posición", "S esperado", "P5", "P25", "Mediana", "P75",
+                    "P95", "Prob. en dinero (%)", "Prob. de ganar neto (%)",
+                    "Pago esperado", "Prima (ask)"),
+      caption = "Distribución del precio a vencimiento implícita en el árbol (N=500, 18-dic-2026)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE, font_size = 12)
+```
+
+```{r forecast-abanico, fig.width = 11, fig.height = 8.5}
+par(mfrow = c(2, 4), mar = c(4.2, 4.2, 3.2, 1))
+pasos <- 0:56
+for (a in activos) {
+  p <- pos[a, ]; x <- M[p$id, ]; s <- x$iv_tv / 100
+  qf <- function(al) sapply(pasos, function(i) cuantil.arbol(x$S, rf, x$q, s, i, al))
+  q05 <- qf(0.05); q25 <- qf(0.25); q50 <- qf(0.5); q75 <- qf(0.75); q95 <- qf(0.95)
+  plot(pasos, q50, type = "n", ylim = range(c(q05, q95, p$equilibrio, p$K)),
+       xlab = "Días desde el 23-oct", ylab = paste("Precio de", a),
+       main = paste(a, p$tipo, p$K))
+  polygon(c(pasos, rev(pasos)), c(q05, rev(q95)), col = adjustcolor(colores[a], 0.18), border = NA)
+  polygon(c(pasos, rev(pasos)), c(q25, rev(q75)), col = adjustcolor(colores[a], 0.35), border = NA)
+  lines(pasos, q50, col = colores[a], lwd = 2)
+  abline(h = p$K, col = "gray30", lty = 2); abline(h = p$equilibrio, col = "darkgreen", lty = 3)
+  legend("topleft", bty = "n", cex = 0.7, lty = c(1, 2, 3), lwd = c(2, 1, 1),
+         col = c(colores[a], "gray30", "darkgreen"), legend = c("Mediana", "Strike", "Equilibrio"))
+}
+par(mfrow = c(1, 1))
+```
+
+**Interpretación.** Las bandas son los percentiles 5-95 (claro) y 25-75 (oscuro) del precio que implica el árbol (en su límite continuo) día a día; se ensanchan con la raíz del tiempo y son más anchas donde la volatilidad es mayor (AMD, ASML, NVDA, SLV frente a SPY y TLT). La línea del equilibrio dice cuánto tiene que moverse el precio para que la posición gane: en `r paste(pos$activo[order(abs(pos$mov_req))][1:3], collapse = ", ")` es el movimiento más pequeño y en `r paste(rev(pos$activo[order(abs(pos$mov_req))])[1:3], collapse = ", ")`, el más grande. Una probabilidad de ganar neto de prima de entre `r round(min(fc$Ganar))` % y `r round(max(fc$Ganar))` % es lo normal para opciones cerca del dinero: se paga prima, y para recuperarla hace falta que el precio termine más allá del strike.
+
+### Escenarios del portafolio
+
+```{r escenarios}
+# P&L de cada posición frente a su precio de entrada (ask), con el árbol americano,
+# ante un movimiento uniforme de todos los subyacentes, a tres horizontes
+
+valor.pos <- function(i, shock, dias_avance) {
+  p <- pos[i, ]; x <- M[p$id, ]
+  Tn <- T_anios - dias_avance / 365
+  if (Tn <= 1e-6) {
+    S1 <- p$S * (1 + shock)
+    return(if (p$tipo == "call") max(S1 - p$K, 0) else max(p$K - S1, 0))
+  }
+  crr(p$S * (1 + shock), p$K, rf, p$q, p$iv / 100, Tn, 150, p$tipo, TRUE, guardar = 0)$precio
+}
+pnl.port <- function(shock, dias_avance) {
+  sapply(seq_len(nrow(pos)), function(i) pos$cantidad[i] * (valor.pos(i, shock, dias_avance) - pos$ask[i]))
+}
+
+shocks_tab <- c(-0.15, -0.10, -0.05, 0, 0.05, 0.10, 0.15)
+esc <- sapply(shocks_tab, function(s) pnl.port(s, 28))
+rownames(esc) <- pos$activo
+esc <- rbind(esc, Portafolio = colSums(esc))
+colnames(esc) <- paste0(shocks_tab * 100, " %")
+kable(round(esc), format.args = list(big.mark = ","),
+      caption = "Resultado en USD a 28 días (mitad de la vida), movimiento uniforme del subyacente") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE, font_size = 12) %>%
+  row_spec(nrow(esc), bold = TRUE)
+```
+
+```{r escenarios-curva, fig.width = 10}
+sh <- seq(-0.15, 0.15, length.out = 31)
+c0  <- sapply(sh, function(s) sum(pnl.port(s, 0)))
+c28 <- sapply(sh, function(s) sum(pnl.port(s, 28)))
+cV  <- sapply(sh, function(s) sum(pnl.port(s, dias_a_vencimiento)))
+plot(sh * 100, cV, type = "l", lwd = 2, ylim = range(c(c0, c28, cV)),
+     main = "Resultado del portafolio ante un movimiento uniforme del mercado",
+     xlab = "Movimiento de todos los subyacentes (%)", ylab = "Resultado (USD)")
+lines(sh * 100, c0, col = "blue", lty = 2, lwd = 2)
+lines(sh * 100, c28, col = "darkorange", lty = 2, lwd = 2)
+abline(h = 0, col = "gray70", lty = 2); abline(v = 0, col = "gray70", lty = 2)
+legend("topleft", bty = "n", cex = 0.85, lty = c(1, 2, 2), lwd = 2,
+       col = c("black", "blue", "darkorange"),
+       legend = c("Al vencimiento (18-dic)", "Hoy", "En 28 días"))
+```
+
+**Interpretación.** El escenario mueve todos los subyacentes lo mismo, que es una simplificación: no incorpora correlaciones reales ni que las calls y las puts se compensan parcialmente. Con cinco calls y tres puts, el portafolio tiene una delta neta positiva de `r fmt(sum(G$delta_usd))` USD, y por eso le va mejor cuando el mercado sube que cuando baja (`r fmt(esc["Portafolio", "15 %"])` USD con +15 % frente a `r fmt(esc["Portafolio", "-15 %"])` USD con -15 % a 28 días). La curva no es una línea recta: las puts de SPY, SLV y AMD le dan convexidad, por eso con -15 % el resultado vuelve a ser positivo. El theta de `r fmt(sum(G$theta_usd))` USD por día es el costo de esperar: a 28 días y sin que nada se mueva, el portafolio pierde `r fmt(abs(esc["Portafolio", "0 %"]))` USD, cerca de `r round(abs(esc["Portafolio", "0 %"]) / sum(pos$costo) * 100)` % de la prima. La pérdida máxima no depende de ningún escenario: es la prima de `r fmt(sum(pos$costo))` USD.
+
+## Comparación y conclusiones
+
+```{r comparacion}
+cmp <- data.frame(
+  Activo = pos$activo,
+  Posicion = paste(pos$tipo, pos$K),
+  IV = Mp$iv_tv,
+  q = Mp$q * 100,
+  Prima_EA = Mp$prima_ea,
+  Prima_pct = Mp$prima_pct,
+  Dif_mercado = (Mp$mid / Mp$p_am - 1) * 100,
+  Ganar = fc$Ganar,
+  Costo = pos$costo
+)
+kable(cmp, digits = c(0, 0, 2, 2, 4, 2, 1, 1, 0), row.names = FALSE,
+      format.args = list(big.mark = ","),
+      col.names = c("Activo", "Posición", "IV (%)", "q (%)",
+                    "Prima ejercicio anticipado (USD)", "Prima EA (% del valor)",
+                    "Mercado vs. árbol (%)", "Prob. de ganar neto (%)", "Costo (USD)"),
+      caption = "Resumen de las ocho posiciones") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE, font_size = 12)
+```
+
+1. **El árbol es consistente con el mercado y con TradingView.** Con la IV de TradingView, el árbol queda a una mediana de `r round(median(abs(M$mid / M$p_am - 1)) * 100, 1)` % del punto medio de mercado y la delta del árbol difiere de la de TradingView en `r round(max(abs(M$delta - M$delta_tv)), 3)` como máximo. Las Griegas coinciden con las de la plataforma, salvo la rho y la delta de las puts, donde TradingView publica la versión europea y el árbol incorpora el ejercicio anticipado (anexo). El precio teórico de TradingView, en cambio, queda a una mediana de `r round(median(abs(M$mid / M$teo_tv - 1)) * 100, 1)` % del mercado, y no se pudo reproducir con la IV y la tasa de las tareas anteriores. La mayor diferencia entre mercado y árbol está en `r M$id[which.max(abs(M$mid / M$p_am - 1))]` (`r round(max(abs(M$mid / M$p_am - 1)) * 100, 1)` %), una opción con cotización probablemente rezagada.
+2. **El ejercicio anticipado depende del dividendo y de la tasa.** En las calls sin dividendo (GLD, SLV y AMD) la prima es exactamente cero; en las puts es pequeña pero positiva y crece con la tasa y el plazo; en el call de TLT, donde $q > r$, aparece una prima positiva que no existiría sin dividendo.
+3. **La liquidez pesa más que el modelo en ASML.** Tiene el spread más ancho del lote (`r round(M["ASML call", "spread"], 1)` % en el call) y el menor volumen; su medio spread (`r fmt(pos["ASML", "costo_ejec"])` USD) es mayor que la diferencia entre el árbol y el mercado.
+4. **El portafolio es largo en volatilidad y corto en tiempo.** Las ocho posiciones tienen vega positiva y theta negativa; la ventaja de operar solo compras es que la pérdida máxima es conocida.
+5. **Las probabilidades del árbol no son un pronóstico.** Son neutrales al riesgo. Sirven para comparar posiciones entre sí y para saber qué tanto hay que mover el precio, no para decir hacia dónde va.
+
+## Evidencia de la cotización y la ejecución
+
+### TradingView: cadenas de opciones
+
+Capturas de las 16 opciones del 18 de diciembre de 2026, del cierre del 23 de octubre de 2026. De aquí salen el bid, el ask, el volumen, la volatilidad implícita, las Griegas y el precio teórico que alimentan todo el análisis.
+
+```{r ev-tv, echo=FALSE, out.width="100%"}
+mostrar.imagenes(file.path("capturas", c(
+  "TV_SPY_CALL.png", "TV_SPY_PUT.png", "TV_TLT_CALL.png", "TV_TLT_PUT.png",
+  "TV_XOM_CALL.png", "TV_XOM_PUT.png", "TV_GLD_CALL.png", "TV_GLD_PUT.png",
+  "TV_SLV_CALL.png", "TV_SLV_PUT.png", "TV_NVDA_CALL.png", "TV_NVDA_PUT.png",
+  "TV_ASML_CALL.png", "TV_ASML_PUT.png", "TV_AMD_CALL.png", "TV_AMD_PUT.png")))
+```
+
+### TradingView: dividend yield
+
+```{r ev-yield, echo=FALSE, out.width="100%"}
+mostrar.imagenes(file.path("capturas", c("TV_YIELD_TLT.png", "TV_YIELD_SPY.png", "TV_YIELD_AMD.png",
+                                         "TV_YIELD_XOM.png", "TV_YIELD_NVDA.png",
+                                         "TV_YIELD_ASML.png")))
+```
+
+### CME
+
+La tasa libre de riesgo es la misma de las tareas anteriores (3.94 %, T-bill de 4 semanas de FRED). Las capturas de CME se anexan como referencia del contexto de tasas.
+
+```{r ev-cme, echo=FALSE, out.width="100%"}
+mostrar.imagenes(file.path("capturas", c("CME_SOFR.png", "CME_FEDWATCH.png")))
+```
+
+### Investopedia Simulator: ejecución y asignación
+
+```{r ev-investopedia, echo=FALSE, out.width="100%"}
+mostrar.imagenes(file.path("capturas", c(
+  "INV_SPY.png", "INV_TLT.png", "INV_XOM.png", "INV_GLD.png", "INV_SLV.png",
+  "INV_NVDA.png", "INV_ASML.png", "INV_AMD.png", "INV_PORTAFOLIO.png")))
+```
+
+## Anexo: validación de las funciones
+
+### Convergencia del árbol europeo a Black-Scholes
+
+```{r anexo-convergencia}
+pasos_prueba <- c(5, 10, 20, 50, 100, 200, 500, 1000, 2000)
+xi <- M["NVDA call", ]
+conv <- data.frame(
+  N = pasos_prueba,
+  Arbol_eur = sapply(pasos_prueba, function(n)
+    crr(xi$S, xi$K, rf, xi$q, xi$iv_tv / 100, T_anios, n, "call", FALSE, guardar = 0)$precio),
+  Arbol_am = sapply(pasos_prueba, function(n)
+    crr(xi$S, xi$K, rf, xi$q, xi$iv_tv / 100, T_anios, n, "call", TRUE, guardar = 0)$precio)
+)
+conv$BS   <- bs.precio(xi$S, xi$K, rf, xi$q, xi$iv_tv / 100, T_anios, "call")
+conv$Error_eur <- conv$Arbol_eur - conv$BS
+kable(conv, digits = c(0, 5, 5, 5, 6),
+      col.names = c("Pasos N", "Árbol europea", "Árbol americana", "Black-Scholes", "Error (europea - BS)"),
+      caption = "NVDA call 210: el árbol converge a Black-Scholes y la americana coincide con la europea") %>%
+  kable_styling(bootstrap_options = c("striped", "condensed"), full_width = FALSE)
+```
+
+```{r anexo-convergencia-grafica, fig.height = 4.2}
+plot(conv$N, conv$Arbol_eur, type = "b", log = "x", pch = 19, lwd = 2, col = "seagreen",
+     xlab = "Pasos N (escala log)", ylab = "Precio del call (USD)",
+     main = "NVDA call 210: convergencia del árbol")
+abline(h = conv$BS[1], lty = 3, lwd = 2)
+legend("bottomright", bty = "n", lwd = 2, lty = c(1, 3), pch = c(19, NA),
+       col = c("seagreen", "black"), legend = c("Árbol europeo", "Black-Scholes"))
+```
+
+### Paridad put-call: árbol y mercado
+
+```{r anexo-paridad}
+par_df <- do.call(rbind, lapply(activos, function(a) {
+  c1 <- M[paste(a, "call"), ]; p1 <- M[paste(a, "put"), ]
+  s  <- c1$iv_tv / 100
+  ce <- crr(c1$S, c1$K, rf, c1$q, s, T_anios, N_precio, "call", FALSE, guardar = 0)$precio
+  pe <- crr(c1$S, c1$K, rf, c1$q, s, T_anios, N_precio, "put",  FALSE, guardar = 0)$precio
+  teo <- c1$S * exp(-c1$q * T_anios) - c1$K * exp(-rf * T_anios)
+  inf <- c1$S * exp(-c1$q * T_anios) - c1$K
+  sup <- c1$S - c1$K * exp(-rf * T_anios)
+  ej_bajo <- c1$bid - p1$ask      # C - P más bajo que se puede ejecutar
+  ej_alto <- c1$ask - p1$bid      # C - P más alto que se puede ejecutar
+  data.frame(Activo = a, Err_arbol = (ce - pe) - teo,
+             CmP_mercado = c1$mid - p1$mid, Inferior = inf, Superior = sup,
+             Dentro = ifelse(c1$mid - p1$mid >= inf & c1$mid - p1$mid <= sup, "Sí", "No"),
+             Ejec_bajo = ej_bajo, Ejec_alto = ej_alto,
+             Compatible = ifelse(ej_bajo <= sup & ej_alto >= inf, "Sí", "No"))
+}))
+kable(par_df, digits = c(0, 8, 3, 3, 3, 0, 3, 3, 0), row.names = FALSE,
+      col.names = c("Activo", "Error de paridad del árbol europeo",
+                    "C - P de mercado (mid)", "Cota inferior", "Cota superior",
+                    "¿Mid dentro de las cotas?", "C bid - P ask", "C ask - P bid",
+                    "¿Bid/ask compatible con las cotas?"),
+      caption = "En opciones europeas C - P = S·e^(-qT) - K·e^(-rT); en americanas solo se cumplen las cotas S·e^(-qT) - K ≤ C - P ≤ S - K·e^(-rT)") %>%
+  kable_styling(bootstrap_options = c("striped", "condensed"), full_width = FALSE)
+```
+
+El árbol europeo cumple la paridad hasta el error numérico. Con opciones americanas la paridad exacta no se sostiene, pero la diferencia $C - P$ del mercado debe quedar entre las dos cotas. Con el punto medio lo hace en `r sum(par_df$Dentro == "Sí")` de los 8 subyacentes`r if (any(par_df$Dentro == "No")) paste0("; la excepción es ", paste(par_df$Activo[par_df$Dentro == "No"], collapse = ", "), ", cuyo punto medio queda ", round(par_df$CmP_mercado[par_df$Dentro == "No"] - par_df$Superior[par_df$Dentro == "No"], 2), " USD por encima de la cota superior. Es ruido de cotización, no un arbitraje: el call de AMD tiene un spread de 2.20 y, con precios que sí se pueden ejecutar, el rango de C - P va de ", round(par_df$Ejec_bajo[par_df$Dentro == "No"], 2), " a ", round(par_df$Ejec_alto[par_df$Dentro == "No"], 2), ", que sí incluye valores dentro de las cotas")`. La última columna lo comprueba: con los precios de bid y ask ejecutables, `r sum(par_df$Compatible == "Sí")` de 8 son compatibles con las cotas. En SPY, la diferencia entre el call y la put se acerca a la cota superior, y las capturas del call (13:52) y de la put (14:07) se tomaron con 15 minutos de diferencia.
+
+### Griegas del árbol contra Black-Scholes analítico y contra TradingView
+
+```{r anexo-griegas}
+vg <- do.call(rbind, lapply(seq_len(nrow(M)), function(i) {
+  x <- M[i, ]
+  b <- bs.griegas(x$S, x$K, rf, x$q, x$iv_tv / 100, T_anios, x$tipo)
+  data.frame(Opcion = x$id,
+             dDelta_BS = x$delta - b["delta"], dDelta_TV = x$delta - x$delta_tv,
+             dGamma_BS = x$gamma - b["gamma"], dGamma_TV = x$gamma - x$gamma_tv,
+             dTheta_BS = x$theta - b["theta"], dTheta_TV = x$theta - x$theta_tv,
+             dVega_BS  = x$vega - b["vega"],   dVega_TV  = x$vega - x$vega_tv,
+             dRho_BS   = x$rho - b["rho"],     dRho_TV   = x$rho - x$rho_tv,
+             row.names = NULL)
+}))
+kable(vg, digits = 4, row.names = FALSE,
+      col.names = c("Opción", "Δ vs BS", "Δ vs TV", "Γ vs BS", "Γ vs TV", "Θ vs BS",
+                    "Θ vs TV", "Vega vs BS", "Vega vs TV", "Rho vs BS", "Rho vs TV"),
+      caption = "Diferencia (árbol menos referencia). Las de TradingView incluyen el redondeo de la pantalla") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE, font_size = 11)
+```
+
+En los **calls** sin ejercicio anticipado, el árbol coincide con Black-Scholes casi exactamente (delta, gamma y vega a cuatro decimales): es la comprobación de que el árbol de 500 pasos está bien construido. En las **puts** la delta y sobre todo la rho del árbol difieren de las europeas (hasta `r round(max(abs(vg$dRho_BS[grepl("put", vg$Opcion)])), 3)` en rho y `r round(max(abs(vg$dDelta_BS[grepl("put", vg$Opcion)])), 3)` en delta) porque el árbol sí incorpora el ejercicio anticipado, que limita la sensibilidad de la put a la tasa. TradingView publica la rho europea de las puts, de ahí que las diferencias contra la plataforma sean mayores ahí.
+
+Contra TradingView, la delta del árbol difiere hasta `r round(max(abs(vg$dDelta_TV)), 3)`, la gamma hasta `r round(max(abs(vg$dGamma_TV)), 4)`, la vega hasta `r round(max(abs(vg$dVega_TV)), 4)`, y la theta hasta `r round(max(abs(vg$dTheta_TV)), 3)` por día (ASML, el subyacente más caro). Parte es redondeo de la pantalla y parte indica que TradingView usa una tasa o un dividendo ligeramente distintos a los de este trabajo. Lo importante es que las unidades coinciden (theta por día, vega y rho por un punto) y el orden de magnitud también.
+
+### Diferencia entre la IV de TradingView y la IV del árbol
+
+```{r anexo-iv}
+iv_df <- data.frame(M$id, M$iv_tv, M$iv_arbol, M$iv_arbol - M$iv_tv, M$mid, M$p_am,
+                    (M$mid / M$p_am - 1) * 100)
+kable(iv_df, digits = c(0, 2, 2, 2, 3, 3, 1), row.names = FALSE,
+      col.names = c("Opción", "IV TradingView (%)", "IV que reproduce el punto medio (%)",
+                    "Diferencia (pp)", "Punto medio", "Árbol con IV TV", "Mercado vs. árbol (%)"),
+      caption = "TradingView da una sola IV por strike; el punto medio de cada lado puede implicar una distinta") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE, font_size = 12)
+```
+
+TradingView publica la misma volatilidad para el call y la put de cada strike, mientras que el punto medio bid/ask de cada lado implica la suya. Las diferencias más grandes (`r M$id[order(abs(M$iv_arbol - M$iv_tv), decreasing = TRUE)[1]]` y `r M$id[order(abs(M$iv_arbol - M$iv_tv), decreasing = TRUE)[2]]`) corresponden a opciones con spread amplio o cotización desfasada, donde el punto medio es poco confiable. Por eso el análisis usa la IV de TradingView como σ del árbol y la del punto medio como control.
+
+## Referencias
+
+1. Hull, J. C. (2022). *Options, Futures, and Other Derivatives* (11.ª ed.). Pearson. Cap. 19 (Griegas) y cap. 21 (árboles binomiales).
+2. Cox, J. C., Ross, S. A. y Rubinstein, M. (1979). Option pricing: a simplified approach. *Journal of Financial Economics, 7*(3), 229-263.
+3. TradingView. Cadenas de opciones de SPY, TLT, XOM, GLD, SLV, NVDA, ASML y AMD con vencimiento el 18 de diciembre de 2026, capturadas el 23-24 de octubre de 2026 (cierre del 23 de octubre). Datos de bid, ask, volumen, volatilidad implícita, Griegas, precio teórico y *dividend yield (indicated)*.
+4. FRED, Reserva Federal de St. Louis. *4-Week Treasury Bill Secondary Market Rate, Discount Basis* (DTB4WK). Tasa usada en las tareas anteriores. <https://fred.stlouisfed.org/series/DTB4WK>
+5. CME Group. Capturas de contexto de tasas anexas en la sección de evidencia.
+6. Investopedia Simulator. Órdenes y posiciones de la cuenta del equipo, anexas en la sección de evidencia.

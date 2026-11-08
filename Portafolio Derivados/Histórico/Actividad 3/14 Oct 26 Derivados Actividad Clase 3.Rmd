@@ -1,0 +1,1205 @@
+---
+title: "Griegas y estrategias de opciones: portafolio de cinco subyacentes"
+author: "Eduardo Ayala Saldaña, Mariann Antonelli Morales Tobias y Ulises Salinas López"
+date: "2026-10-13"
+output:
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    theme: flatly
+    df_print: paged
+    self_contained: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.width = 9, fig.height = 5,
+                      message = FALSE, warning = FALSE)
+library(knitr)
+library(kableExtra)
+```
+
+## Integrantes
+
+```{r integrantes, echo=FALSE}
+equipo <- data.frame(
+  Nombre = c("Eduardo Ayala Saldaña", "Mariann Antonelli Morales Tobias",
+             "Ulises Salinas López"),
+  Matricula = c("A01192714", "A01452078", "A00814787")
+)
+kable(equipo, col.names = c("Integrante", "Matrícula")) %>%
+  kable_styling(bootstrap_options = c("striped", "condensed"), full_width = FALSE)
+```
+
+## Objetivo y método
+
+El proyecto construye **cinco estrategias de opciones**, una por subyacente (SPY, NVDA, JPM, XOM y TLT), todas con vencimiento el **viernes 23 de octubre de 2026**. Para cada una se calculan el resultado al vencimiento, las Greeks y el efecto de distintos escenarios, y al final se consolidan en un portafolio.
+
+**Restricción de diseño.** Todas las posiciones son **compras de opciones**. No se vende ninguna pata. Esto limita el espacio de estructuras a cuatro: call largo, put largo, straddle largo y strangle largo. La consecuencia directa es que **la pérdida máxima de cada estrategia es exactamente la prima pagada**, sin requerimientos de margen ni riesgo de asignación. El costo de esa simplicidad es que no se cobra prima en ninguna posición: el theta es negativo en las cinco.
+
+Las cotizaciones son capturas de LSEG Workspace del **lunes 12 de octubre de 2026 al cierre**. Son capturas de análisis; la ejecución se hizo por separado en Investopedia Simulator. La entrada se calcula de forma conservadora al **ask**, que es el precio que paga un comprador. El plazo es de 11 días (t = 11/365) y la tasa libre de riesgo sale del T-bill a 4 semanas de FRED.
+
+El modelo es Black-Scholes-Merton. Cada opción se valúa con su propia volatilidad implícita, resuelta con el punto medio bid/ask, de modo que el modelo reproduce el precio de mercado de cada pata. Las Greeks se expresan en unidades comparables: *theta* por día, *vega* por 1 punto porcentual de volatilidad y *rho* por 100 puntos base. En dólares, la *delta* es el valor del subyacente equivalente y la *gamma* es el cambio de la delta en dólares ante un movimiento de 1 %.
+
+### Nota metodológica: el spot se infiere de la cadena
+
+Las capturas se tomaron después del cierre, cuando el bid/ask del subyacente ya corresponde al mercado extendido y no al precio con el que se formaron las primas. En NVDA, por ejemplo, el encabezado mostraba un bid/ask de 224.45/224.57 mientras el último hecho era 226.32, casi dos dólares arriba.
+
+Para evitar ese sesgo, el spot de cada subyacente **no se toma del encabezado**: se deduce de la propia cadena con la paridad put-call en el strike más cercano al dinero,
+
+```{r formula-paridad, echo=FALSE}
+cat("S = C - P + K * exp(-rf * t)\n")
+```
+
+donde C y P son los puntos medios bid/ask del call y del put de ese strike. Así el spot queda, por construcción, consistente con las primas que se usan para valuar. En NVDA el método devuelve 226.51 contra un último hecho de 226.32, una diferencia de 0.08 %, lo que valida el procedimiento.
+
+Limitaciones: las opciones son americanas y el modelo es europeo; se supone que no hay dividendos dentro de la ventana; y los escenarios de portafolio usan shocks uniformes porque las betas y correlaciones no están calibradas.
+
+## Contexto de mercado y fuentes
+
+Los datos de esta sección corresponden al cierre del **12 de octubre de 2026** o a la última publicación oficial disponible en esa fecha. Los números entre corchetes remiten a la sección **Referencias**.
+
+```{r contexto-macro, echo=FALSE}
+macro <- data.frame(
+  Variable = c("Tasa de la Fed", "Próxima reunión de la Fed", "Inflación (CPI de agosto)",
+               "CPI de septiembre", "Empleo (septiembre)", "Rendimiento del Tesoro a 10 años",
+               "Máximo intradía del 10 años", "S&P 500 (12 oct.)", "Petróleo WTI (12 oct.)",
+               "Probabilidad de alza en octubre", "T-bill a 4 semanas (7 oct.)"),
+  Dato = c("El 16 de septiembre subió 25 pb a 3.75 %-4.00 %; el comunicado dice que la inflación sigue elevada",
+           "27-28 de octubre, después del vencimiento",
+           "3.4 % anual; el subyacente fue 2.4 % anual",
+           "Se publica el 14 de octubre a las 8:30 ET; consenso de 3.6 %-3.7 % anual, con el núcleo cerca de 0.2 % mensual",
+           "+29,000 empleos y desempleo de 4.2 %",
+           "5.24 % el 12 de octubre (mercado de bonos cerrado por Columbus Day)",
+           "5.365 % el 7 de octubre, el más alto desde abril de 2002",
+           "Cerró en 7,806 (-0.18 %), cerca de su máximo histórico",
+           "Cerca de 94.40 USD (+1.04 %), con pico cerca de 95.50; Brent sobre 106",
+           "Alrededor de 26 % el 7 de octubre, desde cerca de 70 % en septiembre",
+           "3.88 % en base de descuento, equivalente a 3.94 % continua"),
+  Fuente = c("[1]", "[2]", "[3]", "[4][16]", "[5]", "[13]", "[13]", "[13]", "[13]",
+             "[17]", "[7]")
+)
+kable(macro, col.names = c("Variable", "Dato", "Fuente"),
+      caption = "Datos macro y de mercado al 12 de octubre de 2026") %>%
+  kable_styling(bootstrap_options = c("striped", "condensed"), full_width = FALSE,
+                font_size = 12)
+```
+
+```{r contexto-calendario, echo=FALSE}
+calendario <- data.frame(
+  Fecha = c("13 oct.", "14 oct.", "23 oct.", "27-28 oct.", "Fines de oct.", "Nov."),
+  Evento = c("JPM publica resultados del tercer trimestre (antes de la apertura)",
+             "CPI de septiembre, 8:30 a.m. ET",
+             "Vencimiento de todas las opciones del proyecto",
+             "Reunión de la Fed",
+             "XOM: resultados del tercer trimestre",
+             "NVDA: resultados del tercer trimestre fiscal"),
+  Estado = c("Confirmado por la empresa [8]; dentro de la ventana",
+             "Confirmado por BLS [4]; **único dato macro programado dentro de la ventana**",
+             "Tercer viernes posterior al análisis",
+             "Confirmado por la Fed [2]; **fuera** de la ventana",
+             "Sin fecha anunciada [10]; probablemente fuera",
+             "Sin fecha anunciada [11]; fuera de la ventana")
+)
+kable(calendario, col.names = c("Fecha", "Evento", "Estado y fuente"),
+      caption = "Calendario relevante hasta el vencimiento") %>%
+  kable_styling(bootstrap_options = c("striped", "condensed"), full_width = FALSE,
+                font_size = 12)
+```
+
+### Tesis macro del portafolio
+
+El portafolio no es una colección de apuestas sueltas. Las cinco posiciones responden a una sola lectura del entorno:
+
+> La inflación impulsada por energía persiste. El CPI de septiembre acelera de 3.4 % a 3.6-3.7 % mientras el crudo cotiza cerca de 94 USD con el Estrecho de Ormuz estructuralmente cerrado. Eso mantiene la presión sobre las tasas largas, que ya están en máximos de 24 años, lo que castiga a los bonos y a las valuaciones de múltiplo alto, y favorece a la energía y al margen financiero de los bancos.
+
+De esa tesis se desprenden las posiciones direccionales: **put en TLT** (tasas al alza), **call en XOM** (energía), **call en JPM** (margen financiero) y **put en NVDA** (compresión de múltiplos en tecnología). La quinta, el **straddle en SPY**, no es direccional: aprovecha que la volatilidad implícita del índice es la más baja de los cinco justo antes del único dato macro de la ventana.
+
+## Parámetros y posiciones
+
+```{r parametros}
+# 0. Limpiar la sesión
+
+rm(list = ls())
+
+# 1. Fechas y plazo
+
+fecha_analisis     <- as.Date("2026-10-12")
+fecha_vencimiento  <- as.Date("2026-10-23")
+dias_a_vencimiento <- as.numeric(fecha_vencimiento - fecha_analisis)   # 11 días
+base_dias <- 365
+t_anios   <- dias_a_vencimiento / base_dias
+
+# 2. Tasa libre de riesgo: T-bill a 4 semanas (FRED, serie DTB4WK, 7-oct-2026)
+#    La serie viene en base de descuento; se convierte a tasa continua (base 365)
+
+tasa_descuento <- 0.0388      # 3.88 % en base de descuento
+dias_letra     <- 28
+precio_letra   <- 1 - tasa_descuento * dias_letra / 360
+rf <- log(1 / precio_letra) * 365 / dias_letra    # tasa continua anual
+
+# 3. Otros parámetros
+
+multiplicador      <- 100        # acciones/ETF por contrato
+capital_simulador  <- 1002075    # valor de cuenta en Investopedia (USD)
+efectivo_simulador <- 966870     # efectivo disponible (USD)
+q_dividendo        <- 0          # supuesto: sin dividendos dentro de la ventana
+
+cat("Plazo:", dias_a_vencimiento, "días; t =", round(t_anios, 5), "años\n")
+cat("Tasa libre de riesgo (continua, base 365):", round(rf * 100, 3), "%\n")
+```
+
+### Spot implícito en la cadena
+
+```{r spot-paridad}
+# Puntos medios bid/ask del strike más cercano al dinero de cada subyacente
+# (LSEG, cierre del 12-oct-2026, vencimiento 23-oct-2026)
+
+paridad_atm <- data.frame(
+  subyacente = c("SPY", "NVDA", "JPM", "XOM", "TLT"),
+  strike     = c(779.0, 225.0, 335.0, 172.5, 78.0),
+  call_mid   = c(5.430, 5.675, 6.700, 2.960, 0.785),
+  put_mid    = c(5.405, 3.900, 6.500, 3.150, 0.620),
+  stringsAsFactors = FALSE
+)
+
+# Paridad put-call: S = C - P + K * exp(-rf * t)
+paridad_atm$spot <- paridad_atm$call_mid - paridad_atm$put_mid +
+  paridad_atm$strike * exp(-rf * t_anios)
+
+mercado <- paridad_atm[, c("subyacente", "spot")]
+
+kable(paridad_atm, digits = c(0, 2, 3, 3, 2),
+      col.names = c("Subyacente", "Strike ATM", "Call (mid)", "Put (mid)",
+                    "Spot implícito"),
+      caption = "Spot deducido de la cadena por paridad put-call") %>%
+  kable_styling(bootstrap_options = c("striped", "condensed"), full_width = FALSE)
+```
+
+### Las cinco estrategias
+
+```{r posiciones}
+# Posiciones: cinco estrategias, seis patas. Todas son compras (lado = +1).
+# Precio de entrada = ask, que es lo que paga un comprador.
+# iv_lseg y delta_lseg son las columnas "ImpVol Mid" y "Delta Mid" de LSEG.
+
+posiciones <- data.frame(
+  id = c(1, 1, 2, 3, 4, 5),
+  estrategia = c("SPY straddle 778", "SPY straddle 778", "NVDA put 225",
+                 "JPM call 335", "XOM call 172.5", "TLT put 78"),
+  subyacente = c("SPY", "SPY", "NVDA", "JPM", "XOM", "TLT"),
+  tipo       = c("c", "p", "p", "c", "c", "p"),
+  strike     = c(778, 778, 225, 335, 172.5, 78),
+  lado       = c(1, 1, 1, 1, 1, 1),
+  contratos  = c(1, 1, 2, 1, 2, 10),
+  bid = c(5.99, 4.95, 3.85, 6.40, 2.82, 0.61),
+  ask = c(6.03, 4.99, 3.95, 7.00, 3.10, 0.63),
+  iv_lseg = c(11.0495, 10.3490, NA, 31.1720, 26.7924, 13.2369) / 100,
+  delta_lseg = c(0.5238, -0.4803, NA, 0.5024, 0.5002, -0.4701),
+  oi      = c(2372, 1583, 7960, 597, 739, 6752),
+  volumen = c(7284, 1599, 2435, 1303, 443, 851),
+  stringsAsFactors = FALSE
+)
+
+posiciones$precio_mid     <- (posiciones$bid + posiciones$ask) / 2
+posiciones$precio_entrada <- posiciones$ask          # todas son compras
+posiciones$spot     <- mercado$spot[match(posiciones$subyacente, mercado$subyacente)]
+posiciones$cantidad <- posiciones$lado * posiciones$contratos * multiplicador
+```
+
+```{r tabla-posiciones}
+tabla_pos <- data.frame(
+  Estrategia = posiciones$estrategia,
+  Tipo = ifelse(posiciones$tipo == "c", "Call", "Put"),
+  Posicion = "Compra",
+  Strike = posiciones$strike,
+  Vencimiento = format(fecha_vencimiento, "%d-%b-%Y"),
+  Contratos = posiciones$contratos,
+  Prima = posiciones$precio_entrada,
+  Bid = posiciones$bid,
+  Ask = posiciones$ask,
+  Spread = round((posiciones$ask - posiciones$bid) / posiciones$precio_mid * 100, 1),
+  OI = posiciones$oi,
+  Volumen = posiciones$volumen
+)
+kable(tabla_pos, row.names = FALSE, format.args = list(big.mark = ","),
+      col.names = c("Estrategia", "Tipo", "Posición", "Strike", "Vencimiento",
+                    "Contratos", "Prima de entrada", "Bid", "Ask", "Spread (%)",
+                    "Open interest", "Volumen"),
+      caption = "Tabla de operaciones (LSEG, cierre del 12 de octubre de 2026)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE, font_size = 12)
+```
+
+El **spread bid/ask** se incluye en la tabla porque es muy desigual entre subyacentes y condiciona la elección: SPY cotiza con 0.7 % de diferencial mientras XOM supera el 9 % en su strike ATM. Ese costo se paga íntegro al entrar y se vuelve a pagar al salir.
+
+### Parámetros pendientes
+
+```{r pendientes}
+pendientes <- data.frame(
+  Parametro = c("Betas / correlaciones entre subyacentes",
+                "Dividendos dentro de la ventana",
+                "Volatilidad implícita LSEG del put de NVDA",
+                "Preguntas 19.1 a 19.4 de Hull"),
+  Supuesto_actual = c("Shock uniforme (beta = 1)",
+                      "q = 0 (sin dividendos)",
+                      "Columna cortada en la captura; se usa la IV propia",
+                      "Resueltas; ver la sección correspondiente"),
+  Estado = c("Pendiente", "Parcial", "Menor", "Resuelto")
+)
+kable(pendientes, col.names = c("Parámetro", "Supuesto actual", "Estado")) %>%
+  kable_styling(bootstrap_options = c("striped", "condensed"), full_width = FALSE)
+```
+
+## Funciones
+
+```{r funciones}
+# Modelo Black-Scholes-Merton (vectorizado; valor intrínseco si t <= 0)
+
+black.scholes.model <- function(strike, spot, rf, t, sigma, type = "c", q = 0) {
+  n <- max(lengths(list(strike, spot, rf, t, sigma, type, q)))
+  strike <- rep_len(strike, n); spot <- rep_len(spot, n)
+  rf <- rep_len(rf, n); t <- rep_len(t, n); sigma <- rep_len(sigma, n)
+  type <- rep_len(type, n); q <- rep_len(q, n)
+  t_seg <- pmax(t, 1e-12)
+  d1 <- (log(spot / strike) + (rf - q + 0.5 * sigma^2) * t_seg) /
+    (sigma * sqrt(t_seg))
+  d2 <- d1 - sigma * sqrt(t_seg)
+  valor_call <- spot * exp(-q * t_seg) * pnorm(d1) -
+    strike * exp(-rf * t_seg) * pnorm(d2)
+  valor_put <- strike * exp(-rf * t_seg) * pnorm(-d2) -
+    spot * exp(-q * t_seg) * pnorm(-d1)
+  intrinseco <- ifelse(type == "c", pmax(spot - strike, 0),
+                       pmax(strike - spot, 0))
+  ifelse(t <= 0, intrinseco, ifelse(type == "c", valor_call, valor_put))
+}
+
+# Greeks por acción, en unidades estandarizadas:
+# theta por día (base 365), vega por 1 punto porcentual de volatilidad,
+# rho por 100 puntos base de tasa
+
+greeks.bs <- function(strike, spot, rf, t, sigma, type = "c", q = 0) {
+  n <- max(lengths(list(strike, spot, rf, t, sigma, type, q)))
+  strike <- rep_len(strike, n); spot <- rep_len(spot, n)
+  rf <- rep_len(rf, n); t <- rep_len(t, n); sigma <- rep_len(sigma, n)
+  type <- rep_len(type, n); q <- rep_len(q, n)
+  t_seg <- pmax(t, 1e-12)
+  d1 <- (log(spot / strike) + (rf - q + 0.5 * sigma^2) * t_seg) /
+    (sigma * sqrt(t_seg))
+  d2 <- d1 - sigma * sqrt(t_seg)
+  es_call <- type == "c"
+  delta <- ifelse(es_call, exp(-q * t_seg) * pnorm(d1),
+                  exp(-q * t_seg) * (pnorm(d1) - 1))
+  gamma <- exp(-q * t_seg) * dnorm(d1) / (spot * sigma * sqrt(t_seg))
+  vega  <- spot * exp(-q * t_seg) * dnorm(d1) * sqrt(t_seg) / 100
+  theta_anual <- ifelse(
+    es_call,
+    -spot * exp(-q * t_seg) * dnorm(d1) * sigma / (2 * sqrt(t_seg)) -
+      rf * strike * exp(-rf * t_seg) * pnorm(d2) +
+      q * spot * exp(-q * t_seg) * pnorm(d1),
+    -spot * exp(-q * t_seg) * dnorm(d1) * sigma / (2 * sqrt(t_seg)) +
+      rf * strike * exp(-rf * t_seg) * pnorm(-d2) -
+      q * spot * exp(-q * t_seg) * pnorm(-d1))
+  theta <- theta_anual / 365
+  rho <- ifelse(es_call, strike * t_seg * exp(-rf * t_seg) * pnorm(d2),
+                -strike * t_seg * exp(-rf * t_seg) * pnorm(-d2)) / 100
+  # Al vencimiento: delta de escalón y demás griegas en cero
+  vencida <- t <= 0
+  delta <- ifelse(vencida, ifelse(es_call, as.numeric(spot > strike),
+                                  -as.numeric(spot < strike)), delta)
+  gamma <- ifelse(vencida, 0, gamma); vega <- ifelse(vencida, 0, vega)
+  theta <- ifelse(vencida, 0, theta); rho <- ifelse(vencida, 0, rho)
+  data.frame(delta = delta, gamma = gamma, vega = vega, theta = theta, rho = rho)
+}
+
+# Volatilidad implícita por búsqueda de raíz (precio = punto medio bid/ask)
+
+vol.implicita <- function(precio, strike, spot, rf, t, type = "c", q = 0) {
+  f <- function(s) black.scholes.model(strike, spot, rf, t, s, type, q) - precio
+  r <- try(uniroot(f, interval = c(1e-4, 5), tol = 1e-10), silent = TRUE)
+  if (inherits(r, "try-error")) return(NA_real_)
+  r$root
+}
+
+# Ganancia de una pata al vencimiento, por acción (lado: +1 larga, -1 corta)
+
+profit.pata <- function(precio_final, strike, type, lado, precio_entrada) {
+  intrinseco <- if (type == "c") pmax(precio_final - strike, 0) else
+    pmax(strike - precio_final, 0)
+  lado * (intrinseco - precio_entrada)
+}
+
+# Ganancia de una estrategia al vencimiento, en USD
+
+payoff.estrategia <- function(pos, precios) {
+  total <- rep(0, length(precios))
+  for (i in seq_len(nrow(pos))) {
+    total <- total + pos$contratos[i] * multiplicador *
+      profit.pata(precios, pos$strike[i], pos$tipo[i], pos$lado[i],
+                  pos$precio_entrada[i])
+  }
+  total
+}
+
+# Métricas al vencimiento: pérdida y ganancia máximas, equilibrios, costo neto
+
+metricas.estrategia <- function(pos, spot) {
+  precios <- seq(0.4 * spot, 1.6 * spot, length.out = 6001)
+  pl <- payoff.estrategia(pos, precios)
+  n <- length(pl)
+  idx <- which(pl[-n] * pl[-1] < 0)
+  equilibrios <- precios[idx] - pl[idx] * (precios[idx + 1] - precios[idx]) /
+    (pl[idx + 1] - pl[idx])
+  ilimitada <- (pl[n] - pl[n - 1]) > 1e-9
+  list(max_perdida = min(pl),
+       max_ganancia = ifelse(ilimitada, Inf, max(pl)),
+       equilibrios = round(equilibrios, 2),
+       costo_neto = sum(pos$lado * pos$contratos * multiplicador *
+                          pos$precio_entrada))
+}
+
+# Probabilidad aproximada de ganancia al vencimiento: distribución lognormal
+# neutral al riesgo con la volatilidad promedio de las patas (es una estimación)
+
+prob.ganancia <- function(pos, spot, rf, t, sigma) {
+  precios <- seq(0.2 * spot, 3 * spot, length.out = 20001)
+  pl <- payoff.estrategia(pos, precios)
+  dens <- dlnorm(precios, meanlog = log(spot) + (rf - 0.5 * sigma^2) * t,
+                 sdlog = sigma * sqrt(t))
+  sum(dens[pl > 0]) * (precios[2] - precios[1])
+}
+
+# Griegas en USD por pata (cantidad = lado x contratos x multiplicador):
+# delta USD, gamma USD por 1 % de movimiento, vega USD por 1 pp,
+# theta USD por día, rho USD por 100 pb
+
+greeks.posiciones <- function(pos, spot, sigma, rf, t, q = 0) {
+  g <- greeks.bs(pos$strike, spot, rf, t, sigma, pos$tipo, q)
+  data.frame(
+    id = pos$id, estrategia = pos$estrategia, subyacente = pos$subyacente,
+    delta_acc = pos$cantidad * g$delta,
+    delta_usd = pos$cantidad * g$delta * spot,
+    gamma_usd = pos$cantidad * g$gamma * spot^2 * 0.01,
+    vega_usd  = pos$cantidad * g$vega,
+    theta_usd = pos$cantidad * g$theta,
+    rho_usd   = pos$cantidad * g$rho,
+    stringsAsFactors = FALSE
+  )
+}
+
+# Suma de las griegas de una estrategia
+
+griegas.estrategia <- function(pos, rf, t, q = 0) {
+  g <- greeks.posiciones(pos, pos$spot, pos$iv, rf, t, q)
+  colSums(g[, c("delta_acc", "delta_usd", "gamma_usd", "vega_usd",
+                "theta_usd", "rho_usd")])
+}
+
+# Resultado de un escenario por pata, en USD, frente al precio de entrada
+
+escenario.pnl <- function(pos, mercado, rf, t, shock_spot = 0, shock_iv = 0,
+                          shock_rf = 0, dias_avance = 0, beta = NULL, q = 0) {
+  spot_base <- mercado$spot[match(pos$subyacente, mercado$subyacente)]
+  beta_pata <- if (is.null(beta)) rep(1, nrow(pos)) else
+    beta[match(pos$subyacente, names(beta))]
+  spot_nuevo  <- spot_base * (1 + shock_spot * beta_pata)
+  sigma_nuevo <- pmax(pos$iv + shock_iv, 0.01)
+  t_nuevo     <- max(t - dias_avance / base_dias, 0)
+  valor_nuevo <- black.scholes.model(pos$strike, spot_nuevo, rf + shock_rf,
+                                     t_nuevo, sigma_nuevo, pos$tipo, q)
+  pos$cantidad * (valor_nuevo - pos$precio_entrada)
+}
+
+# Escenarios (el de 11 días llega al vencimiento: se usa el payoff)
+
+definir.escenarios <- function() {
+  list(
+    "Base"                 = list(),
+    "Spot +5%"             = list(shock_spot = 0.05),
+    "Spot -5%"             = list(shock_spot = -0.05),
+    "IV +5 pp"             = list(shock_iv = 0.05),
+    "IV -5 pp"             = list(shock_iv = -0.05),
+    "Al vencimiento"       = list(dias_avance = 11),
+    "Tasa +100 pb"         = list(shock_rf = 0.01),
+    "Riesgo (S-5%, IV+5)"  = list(shock_spot = -0.05, shock_iv = 0.05),
+    "Rally (S+5%, IV-5)"   = list(shock_spot = 0.05, shock_iv = -0.05)
+  )
+}
+
+# Tabla de escenarios: filas = estrategias + portafolio, columnas = escenarios
+
+tabla.escenarios <- function(pos, mercado, rf, t, beta = NULL) {
+  esc <- definir.escenarios()
+  res <- sapply(esc, function(par) {
+    pnl_pata <- do.call(escenario.pnl,
+                        c(list(pos = pos, mercado = mercado, rf = rf, t = t,
+                               beta = beta), par))
+    c(tapply(pnl_pata, pos$id, sum), Portafolio = sum(pnl_pata))
+  })
+  rownames(res) <- c(unique(pos$estrategia), "Portafolio")
+  res
+}
+
+# Curva de resultado frente a un rango de shocks de spot (USD)
+
+curva.pnl <- function(pos, mercado, rf, t, shocks, dias_avance = 0, beta = NULL,
+                      q = 0) {
+  sapply(shocks, function(s)
+    sum(escenario.pnl(pos, mercado, rf, t, shock_spot = s,
+                      dias_avance = dias_avance, beta = beta, q = q)))
+}
+
+# Formato de dólares
+
+fmt <- function(x, d = 0) format(round(x, d), big.mark = ",", nsmall = d)
+
+# Inserción de capturas: si el archivo no está, avisa sin romper el knit
+
+mostrar.imagenes <- function(archivos) {
+  existen <- archivos[file.exists(archivos)]
+  faltan  <- archivos[!file.exists(archivos)]
+  if (length(faltan) > 0) {
+    cat("Capturas no encontradas en la carpeta del .Rmd:\n")
+    cat(paste("  -", faltan, collapse = "\n"), "\n")
+  }
+  if (length(existen) > 0) knitr::include_graphics(existen)
+}
+```
+
+```{r iv-propia}
+# Volatilidad implícita de cada pata, resuelta con el punto medio bid/ask
+
+posiciones$iv <- mapply(vol.implicita, posiciones$precio_mid, posiciones$strike,
+                        posiciones$spot, rf, t_anios, posiciones$tipo, q_dividendo)
+
+# Escenarios de todo el portafolio
+
+esc <- tabla.escenarios(posiciones, mercado, rf, t_anios)
+nombres_est <- unique(posiciones$estrategia)
+
+# Tablas y gráficas reutilizables por estrategia
+
+res.estrategia <- function(i) {
+  pos <- posiciones[posiciones$id == i, ]
+  s <- pos$spot[1]
+  list(pos = pos, s = s,
+       met = metricas.estrategia(pos, s),
+       gr = griegas.estrategia(pos, rf, t_anios, q_dividendo),
+       prob = prob.ganancia(pos, s, rf, t_anios, mean(pos$iv)),
+       esc = esc[i, ])
+}
+
+etiqueta.pata <- function(pos) {
+  paste0("Compra ", ifelse(pos$tipo == "c", "call ", "put "), pos$strike)
+}
+
+tabla.patas <- function(pos) {
+  g <- greeks.bs(pos$strike, pos$spot, rf, t_anios, pos$iv, pos$tipo, q_dividendo)
+  d <- data.frame(Pata = etiqueta.pata(pos), Contratos = pos$contratos,
+                  Precio = pos$precio_entrada, IV = pos$iv * 100,
+                  Delta = g$delta, Gamma = g$gamma, Vega = g$vega,
+                  Theta = g$theta, Rho = g$rho,
+                  OI = pos$oi, Volumen = pos$volumen)
+  kable(d, digits = c(0, 0, 2, 2, 4, 5, 4, 4, 4, 0, 0),
+        format.args = list(big.mark = ","),
+        col.names = c("Pata", "Contratos", "Precio entrada", "IV (%)", "Delta",
+                      "Gamma", "Vega (1 pp)", "Theta (día)", "Rho (100 pb)",
+                      "Open interest", "Volumen"),
+        caption = "Griegas por acción de cada pata (IV propia, punto medio)") %>%
+    kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                  full_width = FALSE, font_size = 12)
+}
+
+tabla.metricas <- function(r) {
+  m <- r$met
+  eq <- paste0(m$equilibrios, " (", round((m$equilibrios / r$s - 1) * 100, 1),
+               "%)", collapse = " / ")
+  d <- data.frame(
+    Concepto = c("Costo neto (prima pagada)", "Pérdida máxima",
+                 "Ganancia máxima", "Equilibrio(s) (% frente al spot)",
+                 "Probabilidad aprox. de ganancia al vencimiento"),
+    Valor = c(paste0(fmt(m$costo_neto), " USD"),
+              paste0(fmt(m$max_perdida), " USD"),
+              ifelse(is.infinite(m$max_ganancia), "Ilimitada",
+                     paste0(fmt(m$max_ganancia), " USD")),
+              eq, paste0(round(r$prob * 100), " %")))
+  kable(d, align = c("l", "r"),
+        caption = "Resultado al vencimiento (spot de referencia: USD por acción)") %>%
+    kable_styling(bootstrap_options = c("striped", "condensed"), full_width = FALSE)
+}
+
+tabla.griegas <- function(pos) {
+  g <- greeks.posiciones(pos, pos$spot, pos$iv, rf, t_anios, q_dividendo)
+  d <- g[, c("delta_acc", "delta_usd", "gamma_usd", "vega_usd", "theta_usd",
+             "rho_usd")]
+  d <- rbind(d, colSums(d))
+  d <- data.frame(Pata = c(etiqueta.pata(pos), "Total estrategia"), d)
+  kable(d, digits = c(0, 1, 0, 0, 1, 1, 2), row.names = FALSE,
+        format.args = list(big.mark = ","),
+        col.names = c("Pata", "Delta (acciones)", "Delta (USD)",
+                      "Gamma (USD por 1%)", "Vega (USD por 1 pp)",
+                      "Theta (USD por día)", "Rho (USD por 100 pb)"),
+        caption = "Griegas en USD (cantidad = contratos x 100)") %>%
+    kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                  full_width = FALSE, font_size = 12) %>%
+    row_spec(nrow(d), bold = TRUE)
+}
+
+tabla.escenarios.estrategia <- function(r) {
+  d <- data.frame(Escenario = names(r$esc), Resultado = as.numeric(r$esc))
+  kable(d, digits = 0, format.args = list(big.mark = ","),
+        col.names = c("Escenario", "Resultado (USD)"),
+        caption = "Resultado frente al precio de entrada") %>%
+    kable_styling(bootstrap_options = c("striped", "condensed"), full_width = FALSE) %>%
+    column_spec(2, color = ifelse(d$Resultado >= 0, "darkgreen", "firebrick"))
+}
+
+grafica.estrategia <- function(r, rango, leyenda = "topleft") {
+  pos <- r$pos; s <- r$s
+  shocks <- seq(-rango, rango, length.out = 161)
+  precios <- s * (1 + shocks)
+  pl_venc <- payoff.estrategia(pos, precios)
+  pl_hoy  <- curva.pnl(pos, mercado, rf, t_anios, shocks, 0)
+  pl_5d   <- curva.pnl(pos, mercado, rf, t_anios, shocks, 5)
+  par(mfrow = c(1, 2), mar = c(5, 4.5, 4, 1))
+  plot(precios, pl_venc, type = "l", lwd = 2,
+       ylim = range(c(pl_venc, pl_hoy, pl_5d)),
+       main = "Resultado según el precio del subyacente",
+       xlab = paste("Precio de", pos$subyacente[1]), ylab = "Ganancia (USD)")
+  lines(precios, pl_hoy, col = "blue", lty = 2, lwd = 2)
+  lines(precios, pl_5d, col = "darkorange", lty = 2, lwd = 2)
+  abline(h = 0, col = "lightgray", lty = 2)
+  abline(v = s, col = "purple", lty = 3)
+  abline(v = r$met$equilibrios, col = "darkgreen", lty = 3)
+  legend(leyenda, bty = "n", cex = 0.8,
+         legend = c("Al vencimiento", "Hoy (11 días)", "En 5 días", "Spot",
+                    "Equilibrio"),
+         lty = c(1, 2, 2, 3, 3), lwd = c(2, 2, 2, 1, 1),
+         col = c("black", "blue", "darkorange", "purple", "darkgreen"))
+  par(mar = c(5, 9, 4, 1))
+  vals <- as.numeric(r$esc[-1]); nom <- names(r$esc)[-1]
+  barplot(rev(vals), names.arg = rev(nom), horiz = TRUE, las = 1, cex.names = 0.8,
+          col = ifelse(rev(vals) >= 0, "darkgreen", "firebrick"),
+          main = "Escenarios (USD)", xlab = "Resultado frente a la entrada")
+  abline(v = 0)
+  par(mfrow = c(1, 1))
+}
+```
+
+```{r resultados-estrategias, include=FALSE}
+r1 <- res.estrategia(1); r2 <- res.estrategia(2); r3 <- res.estrategia(3)
+r4 <- res.estrategia(4); r5 <- res.estrategia(5)
+```
+
+## SPY: straddle largo 778
+
+Compra simultánea del call y del put con strike 778, el más cercano al spot. Es la única posición no direccional del portafolio: gana si el índice se mueve lo suficiente en cualquier dirección.
+
+### Justificación
+
+**Por qué SPY.** Es el subyacente con la volatilidad implícita más baja de los cinco (10.2 % contra 32.5 % de NVDA) y el más líquido por mucho: el call 778 registró 7,284 contratos de volumen y el diferencial bid/ask es de apenas 0.7 %, frente a más de 9 % en XOM. En un portafolio donde todas las posiciones pagan prima, el costo de ejecución importa, y aquí es el menor.
+
+**Por qué un straddle y no una posición direccional.** Dentro de la ventana hay un solo dato macro programado: el CPI de septiembre del 14 de octubre. El consenso espera que la inflación acelere de 3.4 % a 3.6-3.7 % [4][16]. El índice cerró en 7,806, cerca de su máximo histórico, mientras el bono a 10 años cotiza en 5.24 % y tocó 5.365 % intradía el 7 de octubre, el nivel más alto desde abril de 2002 [13]. Esa combinación de valuación exigente y tasas largas elevadas es inestable en ambas direcciones: un dato caliente presiona los múltiplos, uno suave da alivio.
+
+Comprar el straddle equivale a decir que la volatilidad realizada de los próximos 11 días será mayor que el 10.2 % anualizado que cobra el mercado. Con una volatilidad implícita de un dígito bajo y un evento macro conocido dentro de la ventana, esa es la apuesta.
+
+**Qué puede salir mal.** El riesgo característico es que el CPI salga en línea y el índice se quede quieto: el theta cuesta `r round(abs(r1$gr["theta_usd"]), 1)` USD por día y la posición necesita un movimiento de ±1.4 % para empatar. También es la posición con mayor vega del portafolio (`r round(r1$gr["vega_usd"], 1)` USD por punto), de modo que una caída de la volatilidad implícita después del dato resta valor aunque el índice se mueva.
+
+### Código
+
+```{r spy-codigo}
+tabla.patas(r1$pos)
+tabla.metricas(r1)
+tabla.griegas(r1$pos)
+tabla.escenarios.estrategia(r1)
+```
+
+### Gráficos
+
+```{r spy-graficos, fig.width = 11}
+grafica.estrategia(r1, 0.05, "bottom")
+```
+
+### Conclusión
+
+El straddle cuesta `r fmt(r1$met$costo_neto)` USD, que es la pérdida máxima y se materializa solo si SPY cierra exactamente en 778. Los equilibrios están en `r r1$met$equilibrios[1]` y `r r1$met$equilibrios[2]` USD, es decir ±1.4 % frente al spot, y la probabilidad aproximada de ganancia es de `r round(r1$prob * 100)` %, la más alta de las cinco estrategias.
+
+La delta neta es casi nula (`r round(r1$gr["delta_acc"], 1)` acciones): la posición no apuesta a dirección. Su valor viene de la gamma (`r fmt(r1$gr["gamma_usd"])` USD por cada 1 %) y de la vega (`r round(r1$gr["vega_usd"], 1)` USD por punto de volatilidad). En los escenarios de ±5 % la posición gana con fuerza en ambos lados, que es exactamente el comportamiento buscado.
+
+## NVDA: put largo 225
+
+Compra de dos puts con strike 225, ligeramente dentro del dinero. Es la posición bajista en tecnología.
+
+### Justificación
+
+**Por qué NVDA.** El 12 de octubre las acciones de semiconductores cayeron por la competencia de CXMT, la fabricante china de memoria, y NVDA retrocedió 1.29 % en la sesión [13]. El sector arrastró al índice ese día. A diferencia de JPM, NVDA no tiene reporte dentro de la ventana: el del tercer trimestre fiscal se espera en noviembre [11], después del vencimiento. Eso significa que no hay catalizador propio que pueda revertir el deterioro sectorial antes del 23 de octubre.
+
+**Por qué un put y no un spread.** La restricción de solo posiciones largas descarta el bear put spread. Entre los strikes disponibles se eligió el 225 porque es el que tiene mayor open interest del lado de los puts en la zona cercana al dinero (7,960 contratos) y porque su delta de -0.43 ofrece sensibilidad direccional suficiente sin pagar el valor temporal de un strike más profundo.
+
+**Qué puede salir mal.** NVDA tiene la volatilidad implícita más alta del portafolio (30.3 % en la pata comprada), de modo que la prima es cara en términos relativos: la posición necesita una caída de 2.4 % para empatar. El theta cuesta `r round(abs(r2$gr["theta_usd"]), 1)` USD por día entre los dos contratos. Un rebote del sector tecnológico, o cualquier noticia favorable sobre inteligencia artificial, revierte la tesis con rapidez.
+
+### Código
+
+```{r nvda-codigo}
+tabla.patas(r2$pos)
+tabla.metricas(r2)
+tabla.griegas(r2$pos)
+tabla.escenarios.estrategia(r2)
+```
+
+### Gráficos
+
+```{r nvda-graficos, fig.width = 11}
+grafica.estrategia(r2, 0.10)
+```
+
+### Conclusión
+
+Con dos contratos el costo es de `r fmt(r2$met$costo_neto)` USD, que es la pérdida máxima. El equilibrio está en `r r2$met$equilibrios` USD, un `r round((r2$met$equilibrios / r2$s - 1) * 100, 1)` % por debajo del spot, y la probabilidad aproximada de ganancia es de `r round(r2$prob * 100)` %.
+
+La delta equivale a `r round(r2$gr["delta_acc"])` acciones (`r fmt(r2$gr["delta_usd"])` USD), la exposición direccional bajista más grande del portafolio después de TLT. En el escenario de caída de 5 % la posición gana `r fmt(r2$esc[["Spot -5%"]])` USD; en el de alza de 5 % pierde `r fmt(abs(r2$esc[["Spot +5%"]]))` USD, menos que la prima completa porque conserva valor temporal.
+
+## JPM: call largo 335
+
+Compra de un call con strike 335, prácticamente en el dinero. Es la posición alcista en financieras.
+
+### Justificación
+
+**Por qué JPM.** La tesis es de margen financiero, no de resultados trimestrales. La Fed subió 25 puntos base el 16 de septiembre y el bono a 10 años cotiza en 5.24 % [1][13]. Un entorno de tasas altas expande el ingreso neto por intereses de los bancos, y la guía de JPM para 2026 contempla cerca de 96.5 mil millones de dólares por ese concepto [15]. A eso se suma que el trimestre tuvo volatilidad abundante por Ormuz y por el movimiento de tasas, lo que suele favorecer los ingresos de la mesa de operación.
+
+El posicionamiento de los analistas es unilateral: diez recomendaciones de compra, siete de mantener y ninguna de venta, con un precio objetivo promedio de 379.67 USD, un 13 % por encima del precio actual [15].
+
+**Coherencia con el portafolio.** Esta posición es la contraparte natural del put de TLT. Si la tesis central es que las tasas largas siguen presionadas al alza, el banco es el beneficiario y el bono el perjudicado. Las dos posiciones apuestan al mismo factor desde lados opuestos del balance.
+
+**Qué puede salir mal.** JPM reporta el 13 de octubre antes de la apertura, es decir, dentro de la ventana y antes de que se forme el precio de entrada [8]. El consenso es de 5.90 USD por acción y 51.22 mil millones de ingresos [15]. El riesgo que señalan los analistas no son los ingresos sino las **provisiones por pérdidas crediticias**: un entorno de tasas altas que ayuda al margen también deteriora la cartera, y la tasa de quebranto de tarjeta ronda 3.2 % [15]. Un aumento de provisiones puede opacar un buen trimestre.
+
+El segundo riesgo es de ejecución: el vencimiento del 23 de octubre tiene un diferencial bid/ask de 8.9 % en el strike 335 y apenas 597 contratos de open interest, porque casi todo el interés está concentrado en el vencimiento del 16 de octubre. Entrar y salir de esta posición es caro.
+
+### Código
+
+```{r jpm-codigo}
+tabla.patas(r3$pos)
+tabla.metricas(r3)
+tabla.griegas(r3$pos)
+tabla.escenarios.estrategia(r3)
+```
+
+### Gráficos
+
+```{r jpm-graficos, fig.width = 11}
+grafica.estrategia(r3, 0.08)
+```
+
+### Conclusión
+
+El call cuesta `r fmt(r3$met$costo_neto)` USD, que es la pérdida máxima, y la ganancia es ilimitada por arriba del equilibrio de `r r3$met$equilibrios` USD, un `r round((r3$met$equilibrios / r3$s - 1) * 100, 1)` % sobre el spot. La probabilidad aproximada de ganancia es de `r round(r3$prob * 100)` %.
+
+La delta equivale a `r round(r3$gr["delta_acc"])` acciones (`r fmt(r3$gr["delta_usd"])` USD) y el theta cuesta `r round(abs(r3$gr["theta_usd"]), 1)` USD por día. El movimiento requerido de poco más de 2 % es exigente para 11 días, pero está dentro del rango que el propio mercado descuenta: el straddle del strike 335 cotiza en 3.9 % del spot.
+
+## XOM: call largo 172.5
+
+Compra de dos calls con strike 172.5, el más cercano al dinero. Es la posición alcista en energía.
+
+### Justificación
+
+**Por qué XOM.** Aporta el único factor de riesgo que no comparte con el resto del portafolio. El WTI cerró el 12 de octubre cerca de 94.40 USD, con un alza de 1.04 % en la sesión y un máximo cercano a 95.50; el Brent superó los 106 [13][14]. XOM subió casi 2 % frente al cierre del 9 de octubre, el mayor movimiento de los cinco subyacentes.
+
+**El cuadro de oferta sigue tenso.** Los hutíes atacaron el aeropuerto de Riad y un dron golpeó un buque cerca de Omán; Irán calificó de insuficiente la respuesta estadounidense sobre la reapertura del Estrecho de Ormuz [13]. Los analistas ya no asumen una resolución rápida: HSBC describe el estrecho como estructuralmente dañado y DBS no contempla que el conflicto se resuelva en un plazo de tres a seis meses [14]. OPEC+ mantiene sus objetivos de producción sin cambios, de modo que no hay oferta adicional en camino.
+
+**Por qué un call y no una estructura neutral.** Vender prima está descartado por la restricción de diseño. El strike 172.5 es el que concentra el volumen del día (443 contratos) y tiene delta de 0.50, la exposición direccional más limpia disponible.
+
+**Qué puede salir mal.** El riesgo es binario y está identificado: Trump anunció una tregua energética entre Rusia y Ucrania que Kiev no reconoció y el Kremlin no confirmó [13]. Esa sola noticia hizo caer el crudo 2.6 % antes de que rebotara. Una confirmación formal movería el petróleo con fuerza a la baja y la posición perdería la prima.
+
+El segundo problema es la ejecución: XOM tiene el peor diferencial bid/ask del portafolio, de 9.4 % en el strike 172.5. Comprar al ask y vender al bid cuesta casi un punto porcentual del subyacente, antes de cualquier movimiento de precio.
+
+### Código
+
+```{r xom-codigo}
+tabla.patas(r4$pos)
+tabla.metricas(r4)
+tabla.griegas(r4$pos)
+tabla.escenarios.estrategia(r4)
+```
+
+### Gráficos
+
+```{r xom-graficos, fig.width = 11}
+grafica.estrategia(r4, 0.10)
+```
+
+### Conclusión
+
+Con dos contratos el costo es de `r fmt(r4$met$costo_neto)` USD. El equilibrio está en `r r4$met$equilibrios` USD, un `r round((r4$met$equilibrios / r4$s - 1) * 100, 1)` % sobre el spot, y la probabilidad aproximada de ganancia es de `r round(r4$prob * 100)` %.
+
+La delta equivale a `r round(r4$gr["delta_acc"])` acciones (`r fmt(r4$gr["delta_usd"])` USD), prácticamente la misma exposición en dólares que el call de JPM, lo que equilibra el portafolio entre dos factores distintos. El theta cuesta `r round(abs(r4$gr["theta_usd"]), 1)` USD por día entre los dos contratos.
+
+## TLT: put largo 78
+
+Compra de diez puts con strike 78, el más cercano al dinero. Es la posición bajista en bonos largos, equivalente a apostar a que las tasas suben.
+
+### Justificación
+
+**Por qué TLT.** Es el vehículo más directo para expresar la tesis central del portafolio. TLT replica bonos del Tesoro de 20 años o más, con una duración cercana a 17, de modo que un movimiento de tasas se amplifica en el precio del ETF. El rendimiento a 10 años cerró en 5.24 % el 12 de octubre y alcanzó 5.365 % intradía el 7 de octubre, el nivel más alto desde abril de 2002 [13].
+
+**El catalizador tiene fecha.** El CPI de septiembre se publica el 14 de octubre y el consenso espera una aceleración de 3.4 % a 3.6-3.7 % anual [4][16]. La presión viene de energía, no del núcleo, que se estima cerca de 0.2 % mensual [16]. Un dato por encima del consenso empuja los rendimientos largos y hunde a TLT. La probabilidad de un alza de tasas en la reunión de octubre ronda 26 %, por debajo del 70 % que llegó a descontarse en septiembre [17], de modo que una sorpresa inflacionaria tiene espacio para reprecio.
+
+**Por qué diez contratos.** El put 78 cuesta 0.63 USD por acción, apenas 63 USD por contrato: es la posición más barata del portafolio por unidad. Diez contratos cuestan `r fmt(r5$met$costo_neto)` USD, en línea con las demás estrategias, y permiten que el factor tasas tenga peso comparable en el conjunto. Además es la pata más líquida después de SPY, con 6,752 contratos de open interest.
+
+**Qué puede salir mal.** La asimetría trabaja en contra en un escenario: si el CPI sale suave, mucho del pesimismo ya está en precio y TLT podría rebotar con fuerza, porque los rendimientos vienen de máximos de 24 años. El theta cuesta `r round(abs(r5$gr["theta_usd"]), 1)` USD por día entre los diez contratos. La reunión de la Fed del 27-28 de octubre queda **fuera** de la ventana, así que la posición no captura esa decisión [2].
+
+### Código
+
+```{r tlt-codigo}
+tabla.patas(r5$pos)
+tabla.metricas(r5)
+tabla.griegas(r5$pos)
+tabla.escenarios.estrategia(r5)
+```
+
+### Gráficos
+
+```{r tlt-graficos, fig.width = 11}
+grafica.estrategia(r5, 0.06)
+```
+
+### Conclusión
+
+Con diez contratos el costo es de `r fmt(r5$met$costo_neto)` USD. El equilibrio está en `r r5$met$equilibrios` USD, apenas `r round((r5$met$equilibrios / r5$s - 1) * 100, 1)` % por debajo del spot, el movimiento requerido más pequeño de las cinco estrategias.
+
+La delta equivale a `r round(r5$gr["delta_acc"])` acciones (`r fmt(r5$gr["delta_usd"])` USD), la exposición direccional más grande del portafolio en términos nominales. Conviene matizar esa cifra: TLT tiene una volatilidad implícita de 12.9 %, muy inferior a la de las acciones individuales, así que un nocional mayor no implica un riesgo proporcionalmente mayor. El theta es el más bajo del portafolio en términos relativos, porque el valor temporal de una opción barata sobre un subyacente poco volátil se consume despacio.
+
+## Comparación de las cinco estrategias
+
+```{r comparacion-codigo}
+rs <- list(r1, r2, r3, r4, r5)
+perfil <- c("Volatilidad (no direccional)", "Bajista (tecnología)",
+            "Alcista (financieras)", "Alcista (energía)", "Bajista (tasas largas)")
+comp <- data.frame(
+  Estrategia = nombres_est,
+  Perfil = perfil,
+  Costo = sapply(rs, function(r) r$met$costo_neto),
+  Perdida = sapply(rs, function(r) r$met$max_perdida),
+  Ganancia = sapply(rs, function(r) r$met$max_ganancia),
+  Prob = sapply(rs, function(r) r$prob * 100),
+  Delta = sapply(rs, function(r) r$gr["delta_usd"]),
+  Gamma = sapply(rs, function(r) r$gr["gamma_usd"]),
+  Vega = sapply(rs, function(r) r$gr["vega_usd"]),
+  Theta = sapply(rs, function(r) r$gr["theta_usd"]),
+  Peor = sapply(rs, function(r) min(r$esc[-1])),
+  Mejor = sapply(rs, function(r) max(r$esc[-1]))
+)
+comp$Ganancia_txt <- ifelse(is.infinite(comp$Ganancia), "Ilimitada",
+                            format(round(comp$Ganancia), big.mark = ","))
+tabla_comp <- data.frame(
+  comp$Estrategia, comp$Perfil,
+  format(round(comp$Costo), big.mark = ","),
+  format(round(comp$Perdida), big.mark = ","),
+  comp$Ganancia_txt,
+  paste0(round(comp$Prob), " %"),
+  format(round(comp$Delta), big.mark = ","),
+  format(round(comp$Gamma), big.mark = ","),
+  round(comp$Vega, 1), round(comp$Theta, 1),
+  format(round(comp$Peor), big.mark = ","),
+  format(round(comp$Mejor), big.mark = ",")
+)
+kable(tabla_comp, align = c("l", "l", rep("r", 10)),
+      col.names = c("Estrategia", "Perfil", "Costo (USD)", "Pérdida máx.",
+                    "Ganancia máx.", "Prob. aprox. de ganar", "Delta (USD)",
+                    "Gamma (USD por 1%)", "Vega (USD por 1 pp)",
+                    "Theta (USD por día)", "Peor escenario", "Mejor escenario"),
+      caption = "Al ser todas compras, el costo neto es siempre un débito y coincide con la pérdida máxima.") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE, font_size = 11)
+```
+
+La tabla deja ver la consecuencia de operar solo con posiciones largas. **Las cinco estrategias tienen vega positiva y theta negativa**: todas se benefician de que la volatilidad suba y todas pagan por el paso del tiempo. No hay ninguna posición que cobre prima para compensar, de modo que el portafolio en conjunto es largo en volatilidad y corto en tiempo. Esa es la huella característica de una cartera construida solo con compras.
+
+En la dimensión direccional sí hay diversificación. NVDA y TLT son cortos en delta (`r fmt(r2$gr["delta_usd"])` y `r fmt(r5$gr["delta_usd"])` USD), JPM y XOM son largos (`r fmt(r3$gr["delta_usd"])` y `r fmt(r4$gr["delta_usd"])` USD) y SPY es prácticamente neutral. Esa compensación es deliberada: el portafolio no apuesta a que el mercado suba o baje, sino a que la rotación entre factores continúe.
+
+Por probabilidad de ganancia, SPY encabeza con `r round(r1$prob * 100)` % porque un straddle gana en ambas colas. Las cuatro direccionales se ubican entre `r round(min(sapply(rs[2:5], function(r) r$prob)) * 100)` % y `r round(max(sapply(rs[2:5], function(r) r$prob)) * 100)` %, un rango normal para opciones cercanas al dinero a 11 días del vencimiento.
+
+## Portafolio consolidado
+
+### Código
+
+```{r portafolio-codigo}
+g_pata <- greeks.posiciones(posiciones, posiciones$spot, posiciones$iv, rf,
+                            t_anios, q_dividendo)
+g_est <- aggregate(cbind(delta_usd, gamma_usd, vega_usd, theta_usd, rho_usd) ~ id,
+                   data = g_pata, FUN = sum)
+g_est <- rbind(g_est, c(0, colSums(g_est[, -1])))
+tabla_port <- data.frame(
+  Estrategia = c(nombres_est, "Portafolio"),
+  g_est[, -1],
+  Delta_pct = g_est$delta_usd / capital_simulador * 100
+)
+kable(tabla_port, digits = c(0, 0, 0, 1, 1, 2, 2), row.names = FALSE,
+      format.args = list(big.mark = ","),
+      col.names = c("Estrategia", "Delta (USD)", "Gamma (USD por 1%)",
+                    "Vega (USD por 1 pp)", "Theta (USD por día)",
+                    "Rho (USD por 100 pb)", "Delta / cuenta (%)"),
+      caption = "Greeks consolidadas en USD (la gamma y la vega suponen un movimiento común)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE, font_size = 12) %>%
+  row_spec(nrow(tabla_port), bold = TRUE)
+
+tabla_esc <- data.frame(Estrategia = rownames(esc), round(esc), check.names = FALSE,
+                        row.names = NULL)
+kable(tabla_esc, format.args = list(big.mark = ","),
+      caption = "Escenarios con shock uniforme (todos los subyacentes se mueven igual), USD") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE, font_size = 11) %>%
+  row_spec(nrow(tabla_esc), bold = TRUE)
+```
+
+### Riesgo frente al capital
+
+```{r portafolio-riesgo}
+riesgo <- data.frame(
+  Concepto = c("Valor de la cuenta (Investopedia)", "Efectivo disponible",
+               "Prima total pagada", "Pérdida máxima del portafolio",
+               "Pérdida máxima / valor de la cuenta",
+               "Costo de ejecución (medio spread de entrada)"),
+  Valor = c(paste0(fmt(capital_simulador), " USD"),
+            paste0(fmt(efectivo_simulador), " USD"),
+            paste0(fmt(sum(posiciones$contratos * multiplicador *
+                             posiciones$precio_entrada)), " USD"),
+            paste0(fmt(-sum(sapply(rs, function(r) r$met$max_perdida))), " USD"),
+            paste0(round(sum(posiciones$contratos * multiplicador *
+                               posiciones$precio_entrada) /
+                           capital_simulador * 100, 2), " %"),
+            paste0(fmt(sum(posiciones$contratos * multiplicador *
+                             (posiciones$ask - posiciones$bid) / 2), 2), " USD"))
+)
+kable(riesgo, align = c("l", "r"),
+      caption = "Al ser todas las posiciones compras, la prima pagada es el riesgo total") %>%
+  kable_styling(bootstrap_options = c("striped", "condensed"), full_width = FALSE)
+```
+
+La propiedad más relevante del portafolio es que **la pérdida máxima es conocida, acotada y exactamente igual a la prima pagada**. No hay escenario, por extremo que sea, en el que se pierda más. Eso es consecuencia directa de no vender ninguna opción y es la ventaja que compensa el costo del theta.
+
+### Gráficos
+
+```{r portafolio-graficos, fig.width = 11, fig.height = 8}
+par(mfrow = c(2, 2), mar = c(5, 4.5, 4, 1))
+colores <- c("steelblue", "firebrick", "darkorange", "seagreen", "purple")
+etq <- c("SPY", "NVDA", "JPM", "XOM", "TLT")
+barplot(g_est$delta_usd[1:5], names.arg = etq, col = colores,
+        main = "Delta (USD)", ylab = "USD"); abline(h = 0)
+barplot(g_est$vega_usd[1:5], names.arg = etq, col = colores,
+        main = "Vega (USD por 1 pp)", ylab = "USD"); abline(h = 0)
+barplot(g_est$theta_usd[1:5], names.arg = etq, col = colores,
+        main = "Theta (USD por día)", ylab = "USD"); abline(h = 0)
+barplot(g_est$gamma_usd[1:5], names.arg = etq, col = colores,
+        main = "Gamma (USD por 1 %)", ylab = "USD"); abline(h = 0)
+par(mfrow = c(1, 1))
+```
+
+```{r portafolio-curva, fig.width = 11}
+shocks <- seq(-0.10, 0.10, length.out = 81)
+p0 <- curva.pnl(posiciones, mercado, rf, t_anios, shocks, 0)
+p5 <- curva.pnl(posiciones, mercado, rf, t_anios, shocks, 5)
+p11 <- curva.pnl(posiciones, mercado, rf, t_anios, shocks, 11)
+plot(shocks * 100, p11, type = "l", lwd = 2, ylim = range(c(p0, p5, p11)),
+     main = "Resultado del portafolio ante un movimiento uniforme del mercado",
+     xlab = "Movimiento del mercado (%)", ylab = "Resultado del portafolio (USD)")
+lines(shocks * 100, p0, col = "blue", lty = 2, lwd = 2)
+lines(shocks * 100, p5, col = "darkorange", lty = 2, lwd = 2)
+abline(h = 0, col = "lightgray", lty = 2); abline(v = 0, col = "lightgray", lty = 2)
+legend("topright", bty = "n", cex = 0.85,
+       legend = c("Al vencimiento", "Hoy (11 días)", "En 5 días"),
+       lty = c(1, 2, 2), lwd = 2, col = c("black", "blue", "darkorange"))
+```
+
+### Conclusión
+
+```{r portafolio-valores, echo=FALSE}
+gp <- as.numeric(g_est[6, ])
+names(gp) <- names(g_est)
+```
+
+El portafolio queda con una delta consolidada de `r fmt(gp["delta_usd"])` USD, equivalente a `r round(gp["delta_usd"] / capital_simulador * 100, 2)` % del valor de la cuenta. Es una cifra modesta: las posiciones largas y cortas en delta se compensan en buena medida, que era el objetivo al combinar factores opuestos.
+
+La vega consolidada es de `r round(gp["vega_usd"])` USD por punto de volatilidad, toda positiva, y el theta de `r round(gp["theta_usd"])` USD por día. En una frase: **el portafolio gana si la volatilidad sube y pierde si el tiempo pasa sin que nada se mueva**. El escenario adverso no es una dirección concreta del mercado, sino la calma.
+
+La curva de resultado muestra la forma característica de una cartera larga en gamma: convexa en ambos extremos, con el mínimo cerca del punto de partida. Un movimiento uniforme de ±5 % produce ganancia; la pérdida se concentra en el escenario central, donde nada se mueve lo suficiente para cubrir las primas.
+
+Estos escenarios no incorporan correlaciones reales entre los subyacentes; son ejercicios de sensibilidad bajo un shock uniforme. La cifra de referencia para el riesgo es la pérdida máxima, que está acotada por construcción.
+
+## Evidencia de la cotización y la ejecución
+
+### LSEG Workspace: cadenas de opciones
+
+Cadenas con vencimiento 23 de octubre de 2026, capturadas el 12 de octubre de 2026 al cierre. De estas capturas salen el bid, el ask, el volumen, el open interest, la volatilidad implícita y la delta que alimentan todo el análisis.
+
+```{r ev-lseg, echo=FALSE, out.width="100%"}
+mostrar.imagenes(c("LSEG_NVDA.png", "LSEG_SPY.png", "LSEG_JPM.png",
+                   "LSEG_XOM.png", "LSEG_TLT.png"))
+```
+
+### Alcance de las fuentes
+
+El análisis de estructura, cotización y griegas se realizó íntegramente con **LSEG Workspace**, que provee bid, ask, volumen, open interest, volatilidad implícita y delta por strike. Los perfiles de resultado y los niveles de gamma se calcularon con el código propio de este documento, cuyas funciones están validadas en el anexo contra la paridad put-call y contra diferencias finitas.
+
+### Investopedia Simulator: ejecución
+
+Las cinco estrategias se ejecutaron en Investopedia Simulator con órdenes limitadas al ask y vigencia de un día.
+
+```{r ev-investopedia, echo=FALSE, out.width="100%"}
+mostrar.imagenes(c("INV_SPY_CALL.png", "INV_SPY_PUT.png", "INV_NVDA.png",
+                   "INV_JPM.png", "INV_XOM.png", "INV_TLT.png",
+                   "INV_PORTAFOLIO.png"))
+```
+
+## Prompt utilizado en TecGPT
+
+```
+Actúa como analista cuantitativo de derivados. Tengo que construir un
+portafolio de cinco estrategias de opciones, una por subyacente (SPY, NVDA,
+JPM, XOM y TLT), con vencimiento el 23 de octubre de 2026, y calcular las
+Griegas de cada una y del portafolio consolidado.
+
+Restricción de diseño: todas las posiciones deben ser COMPRAS de calls y
+puts. No se permite vender ninguna pata, de modo que el espacio de
+estructuras se limita a call largo, put largo, straddle largo y strangle
+largo.
+
+Para cada estrategia necesito:
+1. La justificación del subyacente y de la estructura elegida, apoyada en el
+   entorno macroeconómico y en el calendario de eventos de la ventana.
+2. La valuación con Black-Scholes-Merton, usando la volatilidad implícita de
+   cada pata resuelta con el punto medio bid/ask, tasa libre de riesgo del
+   T-bill a 4 semanas y plazo en días naturales entre 365.
+3. Las cinco Griegas en unidades comparables: delta en acciones y en dólares,
+   gamma por 1 % de movimiento, vega por punto porcentual de volatilidad,
+   theta por día y rho por 100 puntos base.
+4. El resultado al vencimiento: pérdida máxima, ganancia máxima, puntos de
+   equilibrio y probabilidad aproximada de ganancia bajo una distribución
+   lognormal neutral al riesgo.
+5. Un análisis de escenarios con shocks de precio de mas menos 5 por ciento,
+   de volatilidad implícita de mas menos 5 puntos porcentuales, de tasa de
+   100 puntos base y de paso del tiempo.
+6. La consolidación del portafolio y la interpretación de sus Griegas
+   agregadas.
+
+Entrega el desarrollo en código R reproducible (R Markdown) con funciones
+para el modelo, las Griegas, la volatilidad implícita, el payoff y el motor
+de escenarios, más un anexo que valide las funciones contra la paridad
+put-call y contra diferencias finitas.
+
+No inventes cotizaciones: usa únicamente los datos de mercado que yo
+proporcione, provenientes de LSEG Workspace.
+```
+
+## Preguntas 19.1 a 19.4 de Hull (Capítulo 19: The Greek Letters)
+
+### 19.1 ¿Cómo se vuelve delta neutral una posición corta en 1,000 opciones con delta de 0.7 cada una?
+
+La delta de una opción indica cuánto cambia su precio cuando el activo sube un dólar. Si cada opción tiene delta de 0.7, por cada dólar que suba la acción la opción sube unos 0.70 dólares. Como se vendieron 1,000 opciones, la delta de la posición es
+
+$$\Delta_{pos} = -1000 \times 0.7 = -700$$
+
+El signo negativo refleja que, si la acción sube, la posición pierde dinero, como si se estuviera corto en 700 acciones. Para compensarlo hay que tomar la posición contraria: **comprar 700 acciones** del subyacente, cada una con delta de +1. La delta total queda entonces en −700 + 700 = 0.
+
+Si la acción sube un dólar se pierden unos 700 dólares en las opciones y se ganan 700 en las acciones; a la inversa si baja. Eso es estar delta neutral. El resultado supone que cada opción cubre una acción, como en el libro; si cada contrato cubriera 100 acciones habría que multiplicar por 100. Además, la delta cambia conforme se mueve el precio y pasa el tiempo, así que la cobertura debe reajustarse periódicamente.
+
+### 19.2 Delta de un call europeo at-the-money a seis meses
+
+```{r hull-19-2}
+S <- 100; K <- 100      # at-the-money: S = K, por lo que log(S/K) = 0
+r_h <- 0.10             # tasa libre de riesgo: 10 % anual
+sigma_h <- 0.25         # volatilidad: 25 % anual
+T_h <- 0.5              # seis meses
+
+d1 <- (log(S / K) + (r_h + sigma_h^2 / 2) * T_h) / (sigma_h * sqrt(T_h))
+delta_call <- pnorm(d1)
+
+cat("d1    =", round(d1, 4), "\n")
+cat("Delta =", round(delta_call, 4), "\n")
+```
+
+La delta de un call europeo sobre una acción que no paga dividendos es $\Delta = N(d_1)$, con
+
+$$d_1 = \frac{\ln(S/K) + (r + \sigma^2/2)T}{\sigma\sqrt{T}}$$
+
+Como la opción está at-the-money, $\ln(S/K) = \ln(1) = 0$, de modo que
+
+$$d_1 = \frac{0 + \left(0.10 + \frac{0.25^2}{2}\right) \times 0.5}{0.25 \times \sqrt{0.5}} = \frac{0.065625}{0.17678} = 0.3712$$
+
+y por tanto $N(0.3712) = 0.645$.
+
+**Interpretación.** Si la acción sube un dólar, el call sube alrededor de 0.645 dólares. Para cubrir un call vendido se necesitarían unas 0.645 acciones por opción. El valor supera 0.5 porque la tasa de interés positiva y la volatilidad hacen que el call tenga más probabilidad de terminar con valor.
+
+### 19.3 "El procedimiento para crear una posición en opciones sintéticamente es el inverso del procedimiento para cubrirla"
+
+Cubrir una opción y crearla sintéticamente son el mismo procedimiento visto desde lados opuestos.
+
+Para **cubrir** una opción se toma una posición en la acción que cancele su riesgo. Si se tiene un call comprado, se venden $\Delta$ acciones y se ajusta esa cantidad conforme cambia $\Delta$; si se vendió un call, se hace lo contrario y se compran $\Delta$ acciones, financiadas con deuda.
+
+Para **crear un call sintético** se toma la posición que replica al call: se compran $\Delta$ acciones con deuda y se van ajustando de la misma forma. Es decir, la cartera que se usa para crear una opción es justo la contraria a la que se usaría para cubrirla. La compra de $\Delta$ acciones que replica un call comprado es la misma que cubre un call vendido, y la venta de $\Delta$ acciones que cubre un call comprado es lo que haría falta para replicar un call vendido.
+
+Un ejemplo es el put sintético: para crearlo se venden acciones (o futuros del índice) cuando el mercado baja y se recompran cuando sube. Esa es la idea del seguro de portafolio que explica el libro: se protegía una cartera de acciones creando un put sintético en lugar de comprarlo.
+
+### 19.4 Estrategia de stop-loss sobre un call out-of-the-money
+
+```{r hull-19-4}
+precio_bs <- 4.00        # precio Black-Scholes-Merton del call
+compra    <- 40.10       # se compra la acción a este precio
+venta     <- 39.90       # se vende la acción a este precio
+
+costo_por_ciclo <- compra - venta          # costo de una compra más una venta
+n_ciclos <- precio_bs / costo_por_ciclo    # número esperado de ciclos completos
+n_operaciones <- n_ciclos * 2              # cada ciclo tiene una compra y una venta
+
+cat("Costo por ciclo completo:", costo_por_ciclo, "USD\n")
+cat("Número esperado de ciclos:", n_ciclos, "\n")
+cat("Número esperado de veces que se compra o se vende:", n_operaciones, "\n")
+```
+
+La estrategia de stop-loss consiste en comprar la acción cuando su precio sube por encima del strike $K = 40$ y venderla cuando cae por debajo de 40. Así, al vencimiento el trader tiene la acción si el call quedó en dinero y no la tiene si quedó fuera.
+
+Si se pudiera comprar y vender exactamente en 40, la estrategia no costaría nada y cubriría perfecto. Pero en la práctica se compra a 40.10 y se vende a 39.90, y eso genera un costo en cada operación:
+
+- Cada compra se hace 0.10 por arriba de 40.
+- Cada venta se hace 0.10 por debajo de 40.
+- Una compra seguida de una venta cuesta $40.10 - 39.90 = 0.20$.
+
+Por otro lado, en promedio la cobertura debe costar lo mismo que vale la opción, es decir 4 dólares. Entonces:
+
+- Número de ciclos completos de compra y venta: $4 / 0.20 = 20$.
+- Como cada ciclo incluye una compra y una venta, el número de veces que se compra o se vende es $20 \times 2 = 40$.
+
+## Anexo: validación de las funciones
+
+Antes de usar las funciones con datos reales se comprobaron contra identidades conocidas y contra los datos de LSEG.
+
+### Pruebas matemáticas
+
+```{r pruebas}
+# a) Paridad put-call: C - P = S*exp(-qT) - K*exp(-rT)
+set.seed(1)
+n_prueba <- 200
+k_p <- runif(n_prueba, 50, 150); s_p <- runif(n_prueba, 50, 150)
+t_p <- runif(n_prueba, 0.01, 1);  v_p <- runif(n_prueba, 0.1, 0.8)
+r_p <- runif(n_prueba, 0, 0.06);  q_p <- runif(n_prueba, 0, 0.03)
+paridad <- black.scholes.model(k_p, s_p, r_p, t_p, v_p, "c", q_p) -
+  black.scholes.model(k_p, s_p, r_p, t_p, v_p, "p", q_p) -
+  (s_p * exp(-q_p * t_p) - k_p * exp(-r_p * t_p))
+
+# b) Griegas analíticas contra diferencias finitas
+k0 <- 100; s0 <- 102; r0 <- 0.04; t0 <- 0.2; v0 <- 0.3; q0 <- 0.01
+verif_tipo <- function(tp) {
+  f <- function(s = s0, v = v0, r = r0, t = t0)
+    black.scholes.model(k0, s, r, t, v, tp, q0)
+  h <- 1e-4
+  num <- c(delta = (f(s = s0 + h) - f(s = s0 - h)) / (2 * h),
+           gamma = (f(s = s0 + h) - 2 * f() + f(s = s0 - h)) / h^2,
+           vega  = (f(v = v0 + h) - f(v = v0 - h)) / (2 * h) / 100,
+           theta = -(f(t = t0 + h) - f(t = t0 - h)) / (2 * h) / 365,
+           rho   = (f(r = r0 + h) - f(r = r0 - h)) / (2 * h) / 100)
+  ana <- unlist(greeks.bs(k0, s0, r0, t0, v0, tp, q0))
+  ana - num
+}
+dif_call <- verif_tipo("c"); dif_put <- verif_tipo("p")
+
+# c) Ida y vuelta de la volatilidad implícita
+precio_p <- black.scholes.model(100, 98, 0.04, 11 / 365, 0.27, "p")
+vol_vuelta <- vol.implicita(precio_p, 100, 98, 0.04, 11 / 365, "p")
+
+pruebas <- data.frame(
+  Prueba = c("Paridad put-call (error máximo, USD)",
+             "Griegas call vs. diferencias finitas (error máximo)",
+             "Griegas put vs. diferencias finitas (error máximo)",
+             "Volatilidad implícita: ida y vuelta (error)",
+             "Valor al vencimiento = valor intrínseco (call 100, spot 103)"),
+  Resultado = c(max(abs(paridad)), max(abs(dif_call)), max(abs(dif_put)),
+                abs(vol_vuelta - 0.27),
+                black.scholes.model(100, 103, 0.04, 0, 0.3, "c") - 3)
+)
+pruebas$Resultado <- formatC(pruebas$Resultado, format = "e", digits = 2)
+kable(pruebas, align = c("l", "r")) %>%
+  kable_styling(bootstrap_options = c("striped", "condensed"), full_width = FALSE)
+```
+
+### Contra los datos de LSEG
+
+```{r contra-lseg}
+g_propia <- greeks.bs(posiciones$strike, posiciones$spot, rf, t_anios,
+                      posiciones$iv, posiciones$tipo, q_dividendo)
+comparacion <- data.frame(
+  Pata = paste(posiciones$subyacente, posiciones$strike,
+               ifelse(posiciones$tipo == "c", "C", "P")),
+  Mid = posiciones$precio_mid,
+  IV_LSEG = posiciones$iv_lseg * 100,
+  IV_propia = posiciones$iv * 100,
+  Dif_IV = (posiciones$iv - posiciones$iv_lseg) * 100,
+  Delta_LSEG = posiciones$delta_lseg,
+  Delta_propia = g_propia$delta,
+  Dif_delta = g_propia$delta - posiciones$delta_lseg
+)
+kable(comparacion, digits = c(0, 3, 2, 2, 2, 4, 4, 4),
+      col.names = c("Pata", "Mid", "IV LSEG (%)", "IV propia (%)", "Dif. IV (pp)",
+                    "Delta LSEG", "Delta propia", "Dif. delta"),
+      caption = "La fila de NVDA aparece sin dato porque las columnas de IV y delta del lado de los puts quedaron fuera de la captura") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE, font_size = 12)
+```
+
+La cercanía entre la volatilidad implícita propia y la de LSEG confirma que el spot deducido por paridad y la convención de punto medio reproducen la valuación de la plataforma. Como el modelo propio replica el precio de mercado de cada pata por construcción, es el que se usa en todo el análisis.
+
+### Integración del motor de escenarios
+
+Dos comprobaciones: el escenario de 11 días debe dar exactamente el resultado al vencimiento con el spot sin cambios, y el escenario base debe dar una pérdida igual al costo de ejecución, es decir, la mitad del diferencial bid/ask de cada pata.
+
+```{r integracion}
+ids <- unique(posiciones$id)
+payoff_spot <- sapply(ids, function(i) {
+  pos_i <- posiciones[posiciones$id == i, ]
+  payoff.estrategia(pos_i, pos_i$spot[1])
+})
+costo_ejecucion <- sapply(ids, function(i) {
+  pos_i <- posiciones[posiciones$id == i, ]
+  -sum(pos_i$contratos * multiplicador * (pos_i$ask - pos_i$bid) / 2)
+})
+integracion <- data.frame(
+  Estrategia = nombres_est,
+  Payoff_al_spot = payoff_spot,
+  Escenario_vencimiento = esc[1:5, "Al vencimiento"],
+  Costo_ejecucion = costo_ejecucion,
+  Escenario_base = esc[1:5, "Base"]
+)
+integracion$Dif_vencimiento <- integracion$Escenario_vencimiento -
+  integracion$Payoff_al_spot
+integracion$Dif_base <- integracion$Escenario_base - integracion$Costo_ejecucion
+kable(integracion, digits = 2, format.args = list(big.mark = ","),
+      col.names = c("Estrategia", "Payoff al spot", "Escenario vencimiento",
+                    "Costo de ejecución", "Escenario base", "Dif. vencimiento",
+                    "Dif. base"), row.names = FALSE) %>%
+  kable_styling(bootstrap_options = c("striped", "condensed"),
+                full_width = FALSE, font_size = 12)
+```
+
+## Referencias
+
+Las fuentes oficiales son las de la Reserva Federal, el BLS, el Tesoro de EE. UU., FRED y las relaciones con inversionistas de las empresas; las secundarias se indican como tales.
+
+1. Reserva Federal. *Comunicado del FOMC*, 16 de septiembre de 2026 (oficial). <https://federalreserve.gov/newsevents/pressreleases/monetary20260916a.htm>
+2. Reserva Federal. *Calendarios del FOMC 2026* (oficial). <https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm>
+3. BLS. *Consumer Price Index, August 2026*, publicado el 11 de septiembre de 2026 (oficial). <https://www.bls.gov/news.release/archives/cpi_09112026.htm>
+4. BLS. *Calendario de publicación del CPI 2026* (oficial). <https://www.bls.gov/schedule/news_release/cpi.htm>
+5. BLS. *Employment Situation, September 2026*, publicado el 2 de octubre de 2026 (oficial). <https://www.bls.gov/news.release/archives/empsit_10022026.htm>
+6. Departamento del Tesoro de EE. UU. *Daily Treasury Par Yield Curve Rates*, octubre de 2026 (oficial). <https://home.treasury.gov/resource-center/data-chart-center/interest-rates/TextView?type=daily_treasury_yield_curve&field_tdr_date_value_month=202610>
+7. FRED, Reserva Federal de St. Louis. *4-Week Treasury Bill Secondary Market Rate, Discount Basis* (DTB4WK) (oficial). <https://fred.stlouisfed.org/series/DTB4WK>
+8. JPMorgan Chase, relaciones con inversionistas. *Anuncio de la llamada de resultados del tercer trimestre de 2026* (oficial). <https://www.jpmorganchase.com/ir/news/2026/jpmc-to-host-third-quarter-2026-earnings-call>
+9. JPMorgan Chase, relaciones con inversionistas. *JPMorgan Chase declares increased common stock dividend*, septiembre de 2026 (oficial). <https://www.jpmorganchase.com/ir/news/2026/jpmc-declares-increased-common-stock-dividend-9-15>
+10. ExxonMobil, relaciones con inversionistas. *Comunicados de prensa* (oficial). <https://investor.exxonmobil.com/company-information/press-releases>
+11. NVIDIA, relaciones con inversionistas. *Noticias y comunicados* (oficial). <https://investor.nvidia.com/news/>
+12. Dividend Vision. *TLT dividend calendar* (secundaria). <https://www.dividendvision.com/dividends/tlt-dividend-calendar>
+13. Babypips. *Financial & Forex Market Recap*, 12 de octubre de 2026 (secundaria). <https://www.babypips.com/news/financial-forex-market-recap-2026-10-12>
+14. OilPrice. *Oil Price Forecasts Jump as Hormuz Disruption Drags On*, octubre de 2026 (secundaria). <https://oilprice.com/Energy/Oil-Prices/Oil-Price-Forecasts-Jump-as-Hormuz-Disruption-Drags-On.html>
+15. IG. *JPMorgan stock Q3 2026 earnings preview*, 12 de octubre de 2026 (secundaria). <https://www.ig.com/en-ch/news-and-trade-ideas/jpmorgan-stock-q3-2026-earnings-preview-261012>
+16. Nowflation. *September 2026 CPI Report Preview* (secundaria). <https://nowflation.com/cpi-preview/september-2026>
+17. Admiral Markets. *US CPI September 2026 Preview: Scenarios and Fed Odds* (secundaria). <https://admiralmarkets.com/analytics/traders-blog/us-cpi-september-2026-scenarios-fed-october>
+18. LSEG Workspace. Cadenas de opciones con vencimiento el 23 de octubre de 2026 de SPY, NVDA, JPM, XOM y TLT, capturadas el 12 de octubre de 2026 al cierre. Capturas de análisis, no de órdenes ejecutadas.
+19. Investopedia Simulator. Cuenta "DERIVADOS Y RIESGOS EGADE 26"; órdenes ejecutadas el 13 de octubre de 2026.

@@ -1,0 +1,849 @@
+---
+title: "Portafolio de derivados del Equipo 6"
+subtitle: "Registro consolidado y auditado de operaciones · 22 de septiembre al 7 de noviembre de 2026"
+author: "Equipo 6 · Grupo 40 — Eduardo Ayala Saldaña (A01192714), Mariann Antonelli Morales Tobias (A01452078), Ulises Salinas López (A00814787)"
+date: "Productos Derivados y Administración de Riesgos Corporativos · Dr. Raymundo Díaz Robles"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+    code_folding: show
+    df_print: kable
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      fig.width = 9, fig.height = 5, fig.align = "center")
+if (!isTRUE(l10n_info()$`UTF-8`)) {
+  for (lc in c("C.utf8", "en_US.UTF-8", "es_MX.UTF-8")) {
+    try(Sys.setlocale("LC_ALL", lc), silent = TRUE)
+    if (isTRUE(l10n_info()$`UTF-8`)) break } }
+AZUL <- "#2a78d6"; NARANJA <- "#eb6834"; VERDE <- "#1baf7a"; GRIS <- "#898781"
+REJILLA <- "#e1e0d9"; TINTA <- "#52514e"; ROJO <- "#e34948"; VIOLETA <- "#6250d6"
+panel <- function() par(mar = c(4.4, 4.6, 1.4, 1.2), las = 1,
+                        col.axis = TINTA, col.lab = TINTA, fg = REJILLA)
+pct <- function(x, d = 2) paste0(formatC(x, format = "f", digits = d), "%")
+usd <- function(x, d = 0) paste0(ifelse(x < 0, "-", ""), "$",
+                                 formatC(abs(x), format = "f", digits = d, big.mark = ","))
+```
+
+# Qué contiene este documento
+
+El registro completo de las operaciones con derivados que el equipo ejecutó entre el 22 de
+septiembre y el 5 de noviembre de 2026, la estrategia que sustentó cada una, el desenlace de las
+que ya cerraron y la valuación de las que siguen vivas.
+
+La característica que distingue a este reporte es que **las cifras están cuadradas contra los
+saldos de las plataformas**. No se afirma un resultado sin que la suma de las operaciones
+reproduzca el saldo observado. Donde el cuadre no es posible, se dice.
+
+## Las dos plataformas y por qué importa la distinción
+
+Las operaciones se ejecutaron en dos simuladores con reglas, capitales y clases de activo
+distintas. Tratarlos como un solo libro produciría cifras sin sentido.
+
+```{r plataformas}
+plataformas <- data.frame(
+  Plataforma = c("Investopedia", "CME Group Practice"),
+  Capital = c("$1,000,000", "$100,000"),
+  Instrumentos = c("Acciones y opciones sobre acciones",
+                   "Futuros y opciones sobre futuros"),
+  Multiplicador = c("100 por contrato",
+                    "Varía: 50 el ES, 100 el oro, 1,000 el crudo, 100,000 el CAD"),
+  Liquidacion = c("Entrega de acciones", "Efectivo o entrega del futuro"),
+  stringsAsFactors = FALSE)
+plataformas
+```
+
+Un tercer entorno, **TradingView Paper Trading**, es también una cuenta de ejecución de papel
+(capital de $100,000, con posiciones y fills propios) y se documenta aparte en la sección 6.
+Además se usó para obtener cotizaciones y cadenas de opciones en las actividades de clase.
+
+## Los diferenciales alcistas: dónde está la pata vendida y qué acota el riesgo
+
+El portafolio **no es exclusivamente de compras de opciones**. Los dos diferenciales alcistas que el equipo armó
+—el de oro de Eduardo y el de crudo de Ulises— incluyen una pata vendida. Esto tiene consecuencias de riesgo: una call vendida al descubierto tendría
+pérdida ilimitada, y lo que la acota en ambos casos es precisamente la call comprada de strike
+inferior. La estructura es la que limita el riesgo, no una política de no vender.
+
+# La auditoría de las cuentas
+
+Antes de interpretar cualquier resultado, conviene establecer que las cifras son verificables.
+Esta sección reconstruye el saldo de cada cuenta desde las operaciones individuales.
+
+## Cuenta de Investopedia
+
+```{r audit-inv}
+inv <- data.frame(
+  Instrumento = c("AAPL acciones", "NVDA call 227.5 (9-oct)", "AAPL call 332.5 (16-oct)",
+                  "SPY put 778 (23-oct)", "NVDA put 225 (23-oct)", "AAPL put 345 (25-sep)",
+                  "SLV call 55 (16-oct)", "JPM call 335 (23-oct)", "AAPL put 320 (30-oct)",
+                  "TLT put 78 (23-oct)", "SPY call 778 (23-oct)"),
+  Costo   = c(33080, 592, 525, 459, 780, 580, 126, 640, 490, 450, 598),
+  Ingreso = c(34615, 1498, 1320, 1131, 1430, 765, 44, 395, 82, 10, 115),
+  stringsAsFactors = FALSE)
+inv$PL      <- inv$Ingreso - inv$Costo
+inv$Retorno <- inv$PL / inv$Costo * 100
+inv_ord <- inv[order(-inv$PL), ]
+data.frame(Instrumento = inv_ord$Instrumento,
+           Costo   = usd(inv_ord$Costo),
+           Ingreso = usd(inv_ord$Ingreso),
+           `P&L`   = usd(inv_ord$PL),
+           Retorno = pct(inv_ord$Retorno, 1),
+           check.names = FALSE)
+```
+
+```{r audit-inv-cuadre}
+SALDO_INV <- 1003085; CAP_INV <- 1000000
+cat("Suma de las operaciones      ", usd(sum(inv$PL), 2), "\n")
+cat("Variación observada del saldo", usd(SALDO_INV - CAP_INV, 2), "\n")
+cat("Residuo                      ", usd(sum(inv$PL) - (SALDO_INV - CAP_INV), 2), "\n")
+```
+
+El residuo es cero. Las once posiciones cerradas explican la totalidad del movimiento de la
+cuenta. Los símbolos del historial siguen la convención abreviada de la OCC —`TICKER` + año +
+día + letra de mes + strike—, donde la letra codifica simultáneamente el mes y el tipo: `A` a `L`
+son calls de enero a diciembre y `M` a `X` son puts. Así `AAPL2616J332.5` es una call de Apple
+con strike 332.50 que vence el 16 de octubre de 2026.
+
+## Cuenta de CME Group
+
+```{r audit-cme}
+cme <- data.frame(
+  Instrumento = c("Call ES 7830 (S&P 500 e-mini)",
+                  "Call GC 4400 oro (pata vendida)",
+                  "Call GC 4200 oro (pata comprada)"),
+  Apertura = c("5-oct a 58.00", "29-sep a 31.00", "29-sep a 100.50"),
+  Cierre   = c("15-oct a 0.05", "27-oct a 0.10", "27-oct a 0.20"),
+  Mult     = c(50, 100, 100),
+  Signo    = c(1, -1, 1),
+  P_abre   = c(58.00, 31.00, 100.50),
+  P_cierra = c(0.05, 0.10, 0.20),
+  Reportado = c(-2897.5, 3090.0, -10030.0),
+  stringsAsFactors = FALSE)
+cme$Calculado <- cme$Signo * (cme$P_cierra - cme$P_abre) * cme$Mult
+data.frame(Instrumento = cme$Instrumento, Apertura = cme$Apertura, Cierre = cme$Cierre,
+           Calculado = usd(cme$Calculado, 2),
+           `Reportado por CME` = usd(cme$Reportado, 2),
+           Diferencia = usd(cme$Calculado - cme$Reportado, 2),
+           check.names = FALSE)
+```
+
+```{r audit-cme-cuadre}
+SALDO_CME <- 90162.50
+cat("P&L realizado acumulado ", usd(sum(cme$Calculado), 2), "\n")
+cat("Saldo observado hoy     ", usd(SALDO_CME, 2), "\n")
+cat("Capital inicial despejado", usd(SALDO_CME - sum(cme$Calculado), 2), "\n")
+```
+
+El capital inicial que se despeja es exactamente cien mil dólares, que es el monto con que abre
+la plataforma. Las tres operaciones explican la totalidad de la pérdida. Ningún dólar queda sin
+asignar en ninguna de las dos cuentas.
+
+# El hallazgo central
+
+Los dos libros pertenecen al mismo operador y cubren el mismo periodo. Los resultados son
+opuestos.
+
+```{r contraste}
+contraste <- data.frame(
+  Libro = c("Investopedia", "CME Group"),
+  Capital_desplegado = c(sum(inv$Costo), 58*50 + (100.5-31.0)*100),
+  Resultado = c(sum(inv$PL), sum(cme$Calculado)),
+  stringsAsFactors = FALSE)
+contraste$Retorno <- contraste$Resultado / contraste$Capital_desplegado * 100
+data.frame(Libro = contraste$Libro,
+           `Capital desplegado` = usd(contraste$Capital_desplegado),
+           Resultado = usd(contraste$Resultado),
+           Retorno = pct(contraste$Retorno, 1),
+           check.names = FALSE)
+```
+
+La diferencia no la explica el mercado. La explica **cómo se cerraron las posiciones**.
+
+```{r tenencia, fig.height=5.6}
+ten <- data.frame(
+  pos = c("AAPL put 345", "NVDA call 227.5", "AAPL call 332.5", "SPY put 778",
+          "NVDA put 225", "SPY call 778", "TLT put 78", "JPM call 335",
+          "Call ES 7830", "Spread oro"),
+  dias = c(1, 5, 7, 1, 1, 7, 7, 7, 10, 28),
+  libro = c(rep("Investopedia", 8), "CME", "CME"),
+  cierre = c(7.65, 14.98, 13.20, 11.31, 7.15, 1.15, 0.01, 3.95, 0.05, 0.15),
+  apertura = c(5.80, 5.92, 5.25, 4.59, 3.90, 5.98, 0.45, 6.40, 58.00, 69.50),
+  stringsAsFactors = FALSE)
+ten$frac <- ten$cierre / ten$apertura * 100
+ten <- ten[order(ten$frac), ]
+n <- nrow(ten)
+par(mar = c(4.6, 10.5, 1.2, 2.4), las = 1, col.axis = TINTA, col.lab = TINTA, fg = REJILLA)
+col <- ifelse(ten$libro == "CME", NARANJA, AZUL)
+# Escala logaritmica: los valores recorren tres ordenes de magnitud, de 0.09%
+# a 253%. En escala lineal las posiciones de CME serian invisibles, que es
+# justo la informacion que el grafico debe transmitir.
+plot(ten$frac, seq_len(n), log = "x", type = "n", yaxt = "n", xaxt = "n",
+     xlim = c(0.06, 900),
+     xlab = "Valor al cerrar como porcentaje del valor al abrir (escala logaritmica)",
+     ylab = "", panel.first = grid(col = REJILLA, lty = 1))
+axis(1, at = c(0.1, 1, 10, 100, 1000),
+     labels = c("0.1%", "1%", "10%", "100%", "1000%"), tick = FALSE)
+abline(v = 100, col = GRIS, lty = 2, lwd = 1.5)
+segments(0.06, seq_len(n), ten$frac, seq_len(n), col = col, lwd = 1.5)
+points(ten$frac, seq_len(n), pch = 19, col = col, cex = 1.45)
+axis(2, at = seq_len(n), labels = ten$pos, cex.axis = 0.74, tick = FALSE)
+etq <- ifelse(ten$frac < 1, sprintf("%.2f%%", ten$frac), sprintf("%.0f%%", ten$frac))
+text(ten$frac, seq_len(n), etq, pos = 4, offset = 0.75, cex = 0.7, col = TINTA)
+legend("bottomright", c("Investopedia", "CME"), col = c(AZUL, NARANJA),
+       pch = 19, bty = "n", cex = 0.85)
+```
+
+Las tres posiciones de CME se cerraron en **0.05, 0.10 y 0.20**: precios que no son una salida
+sino el reconocimiento de que ya no quedaba nada por rescatar. En Investopedia las posiciones se
+cortaron mientras conservaban valor, en plazos de uno a siete días.
+
+Una opción es un activo que se deteriora por construcción. Sostenerla hasta que el valor temporal
+se agota convierte una apuesta probabilística en una binaria y entrega íntegra la prima al
+vendedor. El contraste entre los dos libros del mismo operador, en el mismo periodo y con el
+mismo criterio de selección, aísla ese efecto mejor que cualquier ejemplo de libro de texto.
+
+
+# Las estrategias
+
+El exportador de cada plataforma lista operaciones sueltas. Pero dos posiciones abiertas el mismo
+día sobre el mismo subyacente no son independientes: forman una estructura con perfil de riesgo
+propio. Esta sección las reconstruye.
+
+## Protective put: el mismo instrumento, dos desenlaces
+
+El equipo armó esta estrategia dos veces sobre la misma acción. Eduardo la ejecutó el 30 de
+septiembre; Ulises la documentó en su Tarea 2. En un caso la acción subió, en el otro bajó. Juntos
+agotan la enseñanza del protective put.
+
+```{r pput}
+pp <- data.frame(
+  Concepto = c("Acciones", "Precio de compra", "Precio de salida", "Strike del put",
+               "Prima pagada", "Prima de salida"),
+  Eduardo = c("100 AAPL", "330.80", "346.15", "320.00", "4.90", "0.82"),
+  Ulises  = c("200 AAPL", "340.37", "332.89", "342.50", "7.50", "9.70"),
+  stringsAsFactors = FALSE)
+pp
+```
+
+```{r pput-pnl}
+e_acc <- (346.15 - 330.80) * 100;  e_put <- (0.82 - 4.90) * 100
+u_acc <- (332.89 - 340.37) * 200;  u_put <- (9.70 - 7.50) * 200
+resumen_pp <- data.frame(
+  Componente = c("Acciones", "Put (el seguro)", "Resultado cubierto", "Resultado sin cubrir"),
+  Eduardo = usd(c(e_acc, e_put, e_acc + e_put, e_acc)),
+  Ulises  = usd(c(u_acc, u_put, u_acc + u_put, u_acc)),
+  stringsAsFactors = FALSE)
+resumen_pp
+```
+
+En el caso de Eduardo la acción subió 15.35 dólares por título. El put nunca se necesitó, expiró
+casi sin valor y costó `r usd(-e_put)`, equivalente al `r pct(-e_put/e_acc*100, 1)` de la ganancia
+de la acción. **El seguro se paga aunque no haya siniestro.**
+
+En el caso de Ulises la acción cayó y el put sí operó. Conviene descomponer su prima para ver
+cuánto de la cobertura llegó efectivamente al bolsillo.
+
+```{r pput-descomp}
+S0 <- 340.37; S1 <- 332.89; K <- 342.50; P0 <- 7.50; P1 <- 9.70
+int0 <- max(K - S0, 0); int1 <- max(K - S1, 0)
+desc <- data.frame(
+  Componente = c("Precio de la acción", "Prima del put",
+                 "   de la cual, valor intrínseco", "   de la cual, valor temporal"),
+  `Al comprar` = c(S0, P0, int0, P0 - int0),
+  Hoy = c(S1, P1, int1, P1 - int1),
+  Cambio = c(S1 - S0, P1 - P0, int1 - int0, (P1 - int1) - (P0 - int0)),
+  check.names = FALSE)
+desc
+cat("\nLa acción cayó", sprintf("%.2f", S0 - S1), "por título.\n")
+cat("El valor intrínseco subió", sprintf("%.2f", int1 - int0),
+    ": capturó la caída uno a uno.\n")
+cat("El valor temporal se consumió", sprintf("%.2f", (P0 - int0) - (P1 - int1)),
+    ", es decir", pct(((P0-int0)-(P1-int1))/(int1-int0)*100, 0), "de esa ganancia.\n")
+cat("Eficacia neta de la cobertura:", pct((P1 - P0)/(S0 - S1)*100, 1), "\n")
+```
+
+El put dentro del dinero capturó la caída de la acción **uno a uno en valor intrínseco**, que es
+exactamente lo que la teoría predice. Pero el valor temporal se evaporó en el camino y devoró el
+71 % de esa ganancia. La cobertura funcionó en dirección y falló en magnitud, y la causa no fue
+un error de ejecución sino la naturaleza del instrumento.
+
+```{r pput-grafico, fig.height=4.6}
+panel()
+ST <- seq(300, 380, by = 0.5)
+sin_cob <- (ST - S0) * 200
+con_cob <- (ST - S0) * 200 + (pmax(K - ST, 0) - P0) * 200
+plot(ST, sin_cob, type = "l", col = GRIS, lwd = 2, lty = 2,
+     xlab = "Precio de Apple al vencimiento", ylab = "Resultado en dólares",
+     panel.first = grid(col = REJILLA, lty = 1))
+lines(ST, con_cob, col = AZUL, lwd = 2.6)
+abline(h = 0, col = TINTA); abline(v = K, col = NARANJA, lty = 3)
+points(S1, (S1 - S0)*200 + (max(K - S1, 0) - P0)*200, pch = 19, col = ROJO, cex = 1.2)
+text(K, max(con_cob)*0.82, paste0("strike ", K), col = NARANJA, cex = 0.78, pos = 2)
+legend("topleft", c("Sin cobertura", "Con protective put", "Punto observado"),
+       col = c(GRIS, AZUL, ROJO), lwd = c(2, 2.6, NA), lty = c(2, 1, NA),
+       pch = c(NA, NA, 19), bty = "n", cex = 0.82)
+```
+
+El perfil muestra lo esencial: por debajo del strike la pérdida queda acotada, y ese piso se
+compra desplazando toda la curva hacia abajo por el monto de la prima. No hay protección gratuita.
+
+## Straddle sobre el S&P 500
+
+El 13 de octubre se compraron **una call y un put de SPY con el mismo strike 778 y el mismo
+vencimiento**, en la misma sesión. No son dos apuestas direccionales opuestas que se anulan: son
+una sola posición cuyo subyacente es la magnitud del movimiento, no su dirección.
+
+```{r straddle}
+c_c <- 5.98; c_v <- 1.15; p_c <- 4.59; p_v <- 11.31
+strad <- data.frame(
+  Pata = c("Call 778", "Put 778", "Straddle"),
+  Costo = usd(c(c_c, p_c, c_c + p_c) * 100),
+  Ingreso = usd(c(c_v, p_v, c_v + p_v) * 100),
+  `P&L` = usd(c(c_v - c_c, p_v - p_c, (c_v + p_v) - (c_c + p_c)) * 100),
+  check.names = FALSE)
+strad
+cat("\nRetorno sobre la prima:", pct(((c_v + p_v)/(c_c + p_c) - 1) * 100, 1), "\n")
+cat("Puntos de equilibrio al vencimiento:", sprintf("%.2f", 778 - (c_c + p_c)),
+    "y", sprintf("%.2f", 778 + (c_c + p_c)), "\n")
+```
+
+```{r straddle-grafico, fig.height=4.6}
+panel()
+ST <- seq(740, 816, by = 0.5)
+prima <- c_c + p_c
+pago <- (pmax(ST - 778, 0) + pmax(778 - ST, 0) - prima) * 100
+plot(ST, pago, type = "l", col = VIOLETA, lwd = 2.6,
+     xlab = "SPY al vencimiento", ylab = "Resultado en dólares",
+     panel.first = grid(col = REJILLA, lty = 1))
+abline(h = 0, col = TINTA)
+abline(v = c(778 - prima, 778 + prima), col = NARANJA, lty = 3)
+polygon(c(778 - prima, 778 + prima, 778 + prima, 778 - prima),
+        c(-1e4, -1e4, 0, 0), col = adjustcolor(ROJO, 0.08), border = NA)
+text(778, -prima*100*0.55, "zona de pérdida", col = ROJO, cex = 0.78)
+legend("top", "Straddle largo 778", col = VIOLETA, lwd = 2.6, bty = "n", cex = 0.82)
+```
+
+El mercado cayó y el put financió con holgura a la call. La estructura no necesitaba acertar la
+dirección; le bastaba con que el movimiento excediera la prima combinada de 10.57 dólares. Es la
+única posición del portafolio cuya tesis es explícitamente sobre volatilidad y no sobre precio.
+
+## Diferenciales alcistas: oro y crudo
+
+Ambos integrantes armaron un bull call spread, sobre subyacentes distintos y con calibraciones muy
+distintas. La comparación revela el intercambio fundamental de la estructura.
+
+```{r spreads}
+sp <- data.frame(
+  Concepto = c("Subyacente al armar", "Strike comprado", "Prima pagada", "Strike vendido",
+               "Prima cobrada", "Débito neto por unidad", "Contratos", "Desembolso",
+               "Ancho del diferencial", "Ganancia máxima", "Beneficio / riesgo",
+               "Punto de equilibrio", "Movimiento necesario", "Débito / ancho"),
+  `Eduardo · oro OG nov-26` = c("4,207.90", "4,200.00", "100.50", "4,400.00", "31.00",
+                                "69.50", "1", "$6,950", "200.00", "$13,050", "1.88 a 1",
+                                "4,269.50", "+1.46%", "35%"),
+  `Ulises · crudo CL oct-26` = c("88.75", "88.75", "2.76", "90.75", "1.76",
+                                 "1.00", "5", "$5,000", "2.00", "$5,000", "1.00 a 1",
+                                 "89.75", "+1.13%", "50%"),
+  check.names = FALSE, stringsAsFactors = FALSE)
+sp
+```
+
+El diferencial de oro paga 1.88 dólares por cada dólar arriesgado; el de crudo paga 1.00. La
+diferencia no proviene de la habilidad sino de **dónde se colocaron los strikes respecto al precio
+corriente**. Eduardo pagó el 35 % del ancho y necesitaba un alza de 1.46 %; Ulises pagó el 50 % y
+necesitaba 1.13 %. Es el intercambio de siempre: cuanto más cerca del dinero se arma la
+estructura, más probable es acertar y menos paga el acierto.
+
+### El desenlace del diferencial de oro
+
+```{r spread-oro}
+oro <- data.frame(
+  Pata = c("Compra call 4200", "Vende call 4400", "Diferencial"),
+  Apertura = c("100.50", "31.00", "69.50 de débito"),
+  Cierre = c("0.20", "0.10", "0.10 de crédito"),
+  `P&L` = usd(c(-10030, 3090, -6940)),
+  check.names = FALSE, stringsAsFactors = FALSE)
+oro
+deb_oro <- (100.5 - 31.0) * 100
+cat("\nPérdida máxima teórica:", usd(-deb_oro, 2), "\n")
+cat("Resultado efectivo:     ", usd(-6940, 2), "\n")
+cat("Fracción realizada de la pérdida máxima:", pct(6940/deb_oro*100, 2), "\n")
+cat("\nSin la pata vendida, la pérdida habría sido", usd(-10030), "\n")
+cat("El diferencial la redujo", pct((1 - 6940/10030) * 100, 1), "\n")
+```
+
+Las dos patas se cerraron el 27 de octubre en 0.20 y 0.10, lo que significa que el oro terminó por
+debajo de 4,200: no solo no alcanzó el equilibrio de 4,269.50, sino que retrocedió bajo el strike
+inferior. La estructura realizó el 99.86 % de su pérdida máxima.
+
+Conviene no leer eso como un fracaso del instrumento. **La pata vendida hizo exactamente su
+trabajo**: aportó 3,090 dólares que amortiguaron la pérdida de la pata comprada en un 30.8 %. Un
+diferencial no mejora la puntería direccional; abarata la apuesta a cambio de techar la ganancia.
+Cumplió con lo que promete.
+
+```{r spread-oro-grafico, fig.height=4.6}
+panel()
+ST <- seq(4050, 4550, by = 1)
+pago <- (pmax(ST - 4200, 0) - pmax(ST - 4400, 0) - 69.50) * 100
+solo <- (pmax(ST - 4200, 0) - 100.50) * 100
+plot(ST, pago, type = "l", col = AZUL, lwd = 2.6, ylim = range(c(pago, solo)),
+     xlab = "Oro al vencimiento (USD por onza)", ylab = "Resultado en dólares",
+     panel.first = grid(col = REJILLA, lty = 1))
+lines(ST, solo, col = GRIS, lwd = 2, lty = 2)
+abline(h = 0, col = TINTA); abline(v = 4269.50, col = NARANJA, lty = 3)
+abline(v = 4207.90, col = VERDE, lty = 3)
+points(4190, -6940, pch = 19, col = ROJO, cex = 1.2)
+text(4269.5, max(pago)*0.9, "equilibrio", col = NARANJA, cex = 0.72, pos = 4)
+text(4207.9, max(pago)*0.62, "spot al armar", col = VERDE, cex = 0.72, pos = 2)
+legend("topleft", c("Diferencial 4200/4400", "Solo call 4200", "Resultado observado"),
+       col = c(AZUL, GRIS, ROJO), lwd = c(2.6, 2, NA), lty = c(1, 2, NA),
+       pch = c(NA, NA, 19), bty = "n", cex = 0.8)
+```
+
+La línea gris muestra lo que habría ocurrido comprando únicamente la call de 4200. A la izquierda
+del gráfico —que es donde terminó el oro— corre por debajo de la azul: ahí está, gráficamente, el
+beneficio de haber vendido la call superior.
+
+
+# El ciclo del 5 de noviembre: primer diseño de la cobertura
+
+Las operaciones de ese ciclo abandonan la lógica de las anteriores. En lugar de expresar una
+vista direccional sobre acciones o materias primas, **replican con derivados listados dos
+exposiciones reales del balance de Walmart**, que es la empresa del proyecto de investigación. El
+portafolio y el estudio de caso dejan de ser dos entregables separados.
+
+## Las dos exposiciones que se cubren
+
+```{r exposiciones}
+exp <- data.frame(
+  Exposicion = c("Deuda emitida en dólares canadienses",
+                 "Swaps de tasa que reciben fijo y pagan variable"),
+  Monto = c("C$5,000 millones", "$4,771 millones nocionales"),
+  Fuente = c("Emisión de octubre de 2026", "Nota 7 del reporte anual 10-K"),
+  Riesgo = c("Si el CAD se aprecia, la deuda cuesta más en dólares",
+             "Si las tasas suben, el swap pierde valor (FV actual: -$411 millones)"),
+  Cobertura = c("Call sobre el futuro del dólar canadiense (6C)",
+                "Put sobre el futuro de la nota del Tesoro a 10 años (ZN)"),
+  stringsAsFactors = FALSE)
+exp
+```
+
+Walmart debe dólares canadienses en el futuro, de modo que está estructuralmente corto esa
+divisa y para cubrirse tendría que comprarla: una call sobre 6C es esa compra. En el libro de
+tasas la empresa recibe fijo y paga variable, posición que pierde cuando los rendimientos suben
+—el valor razonable negativo de 411 millones lo confirma—, y un put sobre ZN es el primo
+bursátil del T-lock que el reporte del proyecto recomienda en el mercado extrabursátil.
+
+## Parámetros de ejecución
+
+```{r posiciones-vivas}
+viv <- data.frame(
+  Posicion = c("Call 6CZ6 strike 0.715", "Put ZNZ6 strike 107.25"),
+  Vencimiento = c("20-nov-2026", "20-nov-2026"),
+  Contratos = c(10, 10),
+  Subyacente = c(0.7145, 107.3172),
+  Prima = c(0.0026, 0.546875),
+  Multiplicador = c(100000, 1000),
+  IV = c(4.53, 6.63),
+  Delta = c(0.471, -0.478),
+  stringsAsFactors = FALSE)
+viv$Desembolso <- viv$Prima * viv$Multiplicador * viv$Contratos
+data.frame(Posición = viv$Posicion, Vence = viv$Vencimiento, Contratos = viv$Contratos,
+           Subyacente = viv$Subyacente, Prima = viv$Prima,
+           `IV` = pct(viv$IV, 2), Delta = viv$Delta,
+           Desembolso = usd(viv$Desembolso), check.names = FALSE)
+cat("\nPrima total comprometida:", usd(sum(viv$Desembolso)), "\n")
+cat("Sobre el saldo de la cuenta:", pct(sum(viv$Desembolso)/90162.50*100, 2), "\n")
+cat("Pérdida máxima posible:", usd(-sum(viv$Desembolso)),
+    "— no hay patas vendidas al descubierto.\n")
+```
+
+Una nota de coherencia que vale registrar: el futuro cotiza en **0.7145 dólares por dólar
+canadiense**, cuyo inverso es **1.3996 USD/CAD**. El análisis del swap cross-currency del proyecto
+de investigación emplea 1.4008. La diferencia es de nueve centésimas de punto porcentual, lo que
+confirma que los parámetros del estudio de caso están calibrados contra el mercado vigente.
+
+## Por qué estas dos posiciones no son la misma apuesta
+
+El ciclo anterior del equipo acumuló ocho posiciones que, vistas de cerca, expresaban una sola
+vista macroeconómica. Era concentración disfrazada de diversificación. Estas dos no lo son, y
+conviene demostrarlo en lugar de afirmarlo.
+
+Si los rendimientos estadounidenses suben, el diferencial de tasas tiende a fortalecer al dólar,
+lo que deprime al dólar canadiense. El put de ZN gana en ese escenario y la call de 6C pierde.
+La relación entre ambas patas es inversa por construcción económica, no por casualidad.
+
+```{r matriz, fig.height=5.2}
+bs_call <- function(F, K, T, r, s) {
+  d1 <- (log(F/K) + 0.5*s^2*T)/(s*sqrt(T)); d2 <- d1 - s*sqrt(T)
+  exp(-r*T)*(F*pnorm(d1) - K*pnorm(d2)) }
+bs_put <- function(F, K, T, r, s) {
+  d1 <- (log(F/K) + 0.5*s^2*T)/(s*sqrt(T)); d2 <- d1 - s*sqrt(T)
+  exp(-r*T)*(K*pnorm(-d2) - F*pnorm(-d1)) }
+
+RF <- 0.0394; T1 <- 8.32/365        # plazo remanente al corte del 12-nov
+COSTO <- sum(viv$Desembolso)
+mov_cad  <- c(-0.015, -0.0075, 0, 0.0075, 0.015)
+mov_bono <- c(-1.5, -0.75, 0, 0.75, 1.5)
+
+M <- outer(mov_cad, mov_bono, Vectorize(function(mc, mb) {
+  vc <- bs_call(0.7145*(1+mc), 0.715, T1, RF, 0.0453) * 100000 * 10
+  vz <- bs_put(107.3172 + mb, 107.25, T1, RF, 0.0663) * 1000 * 10
+  vc + vz - COSTO }))
+dimnames(M) <- list(paste0("CAD ", sprintf("%+.2f", mov_cad*100), "%"),
+                    paste0("bono ", sprintf("%+.2f", mov_bono)))
+M_tab <- as.data.frame(apply(M, c(1,2), function(x) usd(x)))
+M_tab
+```
+
+```{r matriz-grafico, fig.height=5}
+panel()
+rng <- max(abs(M))
+cols <- colorRampPalette(c(ROJO, "#f5f4f0", VERDE))(101)
+image(seq_along(mov_bono), seq_along(mov_cad), t(M), col = cols,
+      zlim = c(-rng, rng), axes = FALSE, xlab = "Movimiento del precio del bono (puntos)",
+      ylab = "Movimiento del dólar canadiense")
+axis(1, at = seq_along(mov_bono), labels = sprintf("%+.2f", mov_bono), tick = FALSE)
+axis(2, at = seq_along(mov_cad), labels = sprintf("%+.1f%%", mov_cad*100), tick = FALSE)
+for (i in seq_along(mov_cad)) for (j in seq_along(mov_bono))
+  text(j, i, usd(M[i, j]), cex = 0.7, col = TINTA)
+box(col = REJILLA)
+```
+
+Las cuatro esquinas de la matriz son los cuatro regímenes posibles:
+
+```{r regimenes}
+reg <- data.frame(
+  Régimen = c("Reflación: tasas suben, dólar se debilita",
+              "Fed restrictiva: tasas suben, dólar se fortalece",
+              "Fed acomodaticia: tasas bajan, dólar se debilita",
+              "Aversión al riesgo: tasas bajan, dólar se fortalece"),
+  `Call 6C` = usd(c(7642, -2583, 7642, -2583)),
+  `Put ZN` = usd(c(9288, 9288, -5114, -5114)),
+  Total = usd(c(16931, 6705, 2529, -7697)),
+  check.names = FALSE, stringsAsFactors = FALSE)
+reg
+```
+
+Solo el cuarto régimen castiga a las dos patas simultáneamente, y exige una combinación
+particular: que el dólar se fortalezca mientras los rendimientos caen, que es el patrón de una
+fuga hacia la calidad. En los dos regímenes intermedios una pata financia a la otra. Eso es
+cobertura; lo del ciclo anterior era acumulación.
+
+## Estado al 9 de noviembre
+
+Las dos posiciones estaban en la cuenta de CME Practice de Eduardo y se cerraron el 9 de noviembre por la mañana (historial de transacciones de CME). Ambas fueron compras de 10 contratos con órdenes límite GTC:
+
+| Posición | Apertura (5-nov) | Cierre (9-nov) | P&L realizado |
+|---|---|---|---|
+| Put ZNA6 107.25 | 5:10 pm, a 0.546875 | 8:41 am, a 0.4375 | -$1,093.75 |
+| Call 6C66 0.715 | 6:08 pm, a 0.0026 | 8:40 am, a 0.0005 | -$2,100.00 |
+
+El P&L realizado total es de -$3,193.75, el 39.6 % de la prima de $8,068.75. Antes del cierre, a las 8:23 am, el P&L no realizado era de -$3,350. El futuro del dólar canadiense pasó de 0.7145 a 0.7094 (-0.7 %) al 8 de noviembre, así que el call perdió el 81 % de su prima y el put el 20 %. El resultado cae dentro del rango de pérdidas que marcaba la matriz y queda lejos de la pérdida máxima.
+
+# Las cuentas: del equipo y las individuales
+
+Esta sección completa el consolidado con las cuentas donde se ejecutó el trabajo, y aclara dos puntos:
+TradingView Paper Trading tiene cuenta de ejecución propia, y las posiciones del ciclo III sí se ejecutaron.
+
+El trabajo es de **dos tipos**. Las Tareas 1 a 3 son movimientos individuales: cada integrante operó en
+su propia cuenta. Las Tareas 4 a 7 son trabajo en equipo, que se ejecutó en las cuentas de Mariann: las posiciones del 16 de octubre y el ciclo III del 18 de diciembre. El ciclo del 5 de noviembre en CME (put ZN y call 6C, 10 contratos cada uno) está en la cuenta de Eduardo, y la cobertura semanal de la sección 7 es un diseño que no se envió.
+
+| Cuenta | Plataforma | Tipo | Qué contiene | Estado |
+|---|---|---|---|---|
+| **Equipo** (operada en las cuentas de Mariann) | Investopedia, CME Practice y TradingView Paper Trading | Equipo, Tareas 4 a 7 | Estructuras del 16-oct y ciclo III (18-dic) | Secciones 6.1 y 6.2 |
+| **Mariann** | Investopedia | Individual, Tareas 1 a 3 | Protective put, bull spread y valuación con Black-Scholes | $989,318.90, lugar 18 de 22 |
+| **Eduardo** | Investopedia | Individual | JPM, SPY, NVDA y TLT (libro auditado en la sección 2). En CME Practice, además, el ciclo del 5-nov: 10 calls 6C y 10 puts ZN (sección 5) | $1,003,085, lugar 2 de 22 |
+| **Ulises** | Investopedia | Individual | AAPL: compras de opciones del 24-sep y venta de 200 acciones del 5-nov | $1,003,845, lugar 3 de 22 |
+
+Como el historial de Mariann mezcla ambos tipos, las tablas siguientes indican el **origen** de cada
+posición. Las capturas de las Tareas 6 y 7 muestran que TradingView tiene cuenta de ejecución propia
+(con fills, posiciones y P&L no realizado) y que las posiciones del 18 de diciembre sí están abiertas
+en Investopedia.
+
+## Investopedia
+
+```{r mar-datos}
+h <- read.csv("../Datos/historial_investopedia.csv", stringsAsFactors = FALSE)
+h$mult     <- ifelse(nchar(h$simbolo) > 6, 100, 1)     # opciones: 100; acciones: 1
+h$compra   <- grepl("Buy", h$tipo)
+h$efectivo <- ifelse(h$compra, -1, 1) * h$precio * h$cantidad * h$mult
+cat("Operaciones en el historial:", nrow(h), "\n")
+cat("Periodo:", min(h$fecha), "a", max(h$fecha), "\n")
+cat("Compras:", sum(h$compra), "| Ventas:", sum(!h$compra), "\n")
+```
+
+```{r mar-cuadre}
+SALDO_MAR <- 989318.90; EFECTIVO_MAR <- 982050.90; CAP_MAR <- 1000000
+efectivo_modelo <- CAP_MAR + sum(h$efectivo)
+cat("Valor de la cuenta (6-nov)        ", usd(SALDO_MAR, 2), "\n")
+cat("Efectivo observado                 ", usd(EFECTIVO_MAR, 2), "\n")
+cat("Efectivo reconstruido del historial", usd(efectivo_modelo, 2), "\n")
+cat("Diferencia                         ", usd(EFECTIVO_MAR - efectivo_modelo, 2), "\n")
+cat("Valor de las posiciones abiertas   ", usd(SALDO_MAR - EFECTIVO_MAR, 2), "\n")
+cat("Variación contra el capital inicial", pct((SALDO_MAR - CAP_MAR) / CAP_MAR * 100, 2), "\n")
+```
+
+El efectivo reconstruido no coincide con el observado por $1,714.90. El historial exportado solo
+registra operaciones que el usuario ejecuta, y varias opciones de septiembre y octubre (los calls
+y puts de AAPL, el put de CMI 520 y el put de XOM 165) vencieron sin aparecer como cierre. Si
+alguna venció en el dinero, el simulador la liquidó por su valor intrínseco, lo que explicaría
+una diferencia positiva. Con lo que se tiene **no se puede comprobar**, así que se declara como
+residuo sin asignar y no se fuerza el cuadre.
+
+```{r mar-cerradas}
+cer <- data.frame(
+  Posicion = c("AMD put 500 (18-dic)", "AMD put 510 (18-dic)", "AAPL acciones",
+               "AAPL put 340 (16-oct)", "NVDA call 235 (16-oct)"),
+  Apertura = c("2-nov", "26-oct", "28-sep", "28-sep", "5-oct"),
+  Cierre   = c("6-nov", "6-nov", "26-oct", "6-oct", "6-oct"),
+  Origen   = c("Equipo (Tarea 7)", "Equipo (Tareas 5 y 6)", "Individual (Tarea 2)",
+               "Individual (Tarea 2)", "Individual (Tarea 3)"),
+  Cantidad = c(1, 1, 100, 1, 1),
+  Mult     = c(100, 100, 1, 100, 100),
+  P_abre   = c(44.65, 37.34, 340.25, 5.80, 5.77),
+  P_cierra = c(65.50, 79.44, 343.92, 8.75, 8.55),
+  stringsAsFactors = FALSE)
+cer$Costo <- cer$P_abre   * cer$Cantidad * cer$Mult
+cer$PL    <- (cer$P_cierra - cer$P_abre) * cer$Cantidad * cer$Mult
+cer$Retorno <- cer$PL / cer$Costo * 100
+data.frame(Posición = cer$Posicion, Origen = cer$Origen, Abre = cer$Apertura, Cierra = cer$Cierre,
+           Costo = usd(cer$Costo), `P&L` = usd(cer$PL), Retorno = pct(cer$Retorno, 1),
+           check.names = FALSE)
+cat("\nP&L realizado de las posiciones cerradas con registro:", usd(sum(cer$PL)), "\n")
+```
+
+El resultado de la cuenta es negativo aunque las posiciones cerradas con registro suman una
+ganancia, y la causa está en las abiertas. Las dos que más ganaron (los puts de AMD) se vendieron
+el 6 de noviembre; las cuatro que siguen vivas llevan pérdida.
+
+```{r mar-abiertas}
+abi <- data.frame(
+  Posicion = c("ASML call 1570", "NVDA call 210", "NVDA call 200", "XOM call 180"),
+  Apertura = c("26-oct", "26-oct", "2-nov", "26-oct"),
+  Origen = c("Equipo (Tareas 5 y 6)", "Equipo (Tareas 5 y 6)", "Equipo (Tarea 7)", "Equipo (Tareas 5 y 6)"),
+  Contratos = c(1, 2, 2, 3),
+  Prima = c(115.00, 16.58, 17.05, 9.55),
+  stringsAsFactors = FALSE)
+abi$Costo <- abi$Prima * abi$Contratos * 100
+data.frame(Posición = abi$Posicion, Origen = abi$Origen, Abre = abi$Apertura, Contratos = abi$Contratos,
+           Prima = abi$Prima, Costo = usd(abi$Costo), Vence = "18-dic-2026")
+cat("\nCosto total de las cuatro abiertas:", usd(sum(abi$Costo)), "\n")
+cat("Valor de mercado de la cuenta menos efectivo:", usd(SALDO_MAR - EFECTIVO_MAR), "\n")
+cat("Pérdida implícita sobre el costo:", usd((SALDO_MAR - EFECTIVO_MAR) - sum(abi$Costo)), "\n")
+```
+
+El patrón de la sección 8 reaparece: el call de ASML pesa $11,500 de los $21,091 invertidos en
+las cuatro posiciones, es decir el 55 %, porque el precio unitario no frenó el tamaño. Ese mismo
+call perdió 76.4 % en la captura de Investopedia previa al 6 de noviembre.
+
+## TradingView Paper Trading
+
+```{r mar-tv}
+tv <- read.csv("../Datos/tradingview_posiciones.csv",
+               check.names = FALSE, stringsAsFactors = FALSE)
+ab <- tv[!is.na(tv[["Last price"]]), ]
+data.frame(Símbolo = sub("OPRA:", "", ab$Symbol), Lado = ab$Side,
+           Cantidad = ab$Quantity, `Precio de entrada` = ab[["Avg fill price"]],
+           `Último` = ab[["Last price"]],
+           `P&L no realizado` = usd(ab[["Unrealized PnL (value)"]]),
+           check.names = FALSE)
+cat("\nPosiciones abiertas:", nrow(ab), "\n")
+cat("P&L no realizado total:", usd(sum(ab[["Unrealized PnL (value)"]])), "\n")
+cat("Posiciones de octubre ya vencidas, sin precio de cierre en el archivo:",
+    sum(is.na(tv[["Last price"]])), "\n")
+```
+
+Los fills de TradingView difieren de los de Investopedia (el call de ASML se llenó a 109.40
+frente a 115.00), de modo que son un segundo libro y no un espejo. Hay dos posiciones que solo
+existen aquí: el put de SPY 759 y el call de TLT 81. Las posiciones de octubre (SPY, NVDA, JPM,
+XOM, TLT, SLV y GLD, vencimiento del 16) aparecen en el archivo sin precio de salida porque ya vencieron; su
+documentación son las capturas de las Tareas 4 a 7, trabajo en equipo.
+
+# Esta semana: cobertura del libro de swaps con futuros
+
+El ciclo del 5 de noviembre cubría dos exposiciones del balance de Walmart con un put sobre ZN
+y un call sobre 6C. Para el vencimiento semanal del lunes 9 de noviembre, fecha que pidió el profesor, el equipo formaliza esa cobertura
+con código propio, `codigo/swap_cobertura.py` (y su notebook), que hace cuatro cosas: calcula
+el DV01 del libro de swaps, valúa las dos patas con Black y con un árbol binomial, simula el P&L
+conjunto con Monte Carlo y compara el tamaño de los tickets con el que daría una regla de presupuesto de riesgo.
+
+Ni Investopedia ni CME Practice operan swaps fuera de bolsa. Lo que sí se puede ejecutar son
+opciones sobre futuros, que replican la sensibilidad a tasas y a divisa del libro de Walmart. Esa
+sustitución es un **proxy** y se declara como tal.
+
+## La exposición y su tamaño frente a la cuenta
+
+```{r sw-dv01}
+dv <- read.csv("../Datos/swap_dv01.csv", stringsAsFactors = FALSE)
+tab <- dv[dv$vida_media_anios != "pata_efectiva_5_puts_zn", ]
+data.frame(`Vida media supuesta` = paste0(tab$vida_media_anios, " años"),
+           `DV01 del libro (USD por pb)` = formatC(as.numeric(tab$dv01_usd_por_pb), format = "f", digits = 0, big.mark = ","),
+           `Contratos ZN equivalentes` = formatC(as.numeric(tab$contratos_zn_equivalentes), format = "f", digits = 0, big.mark = ","),
+           check.names = FALSE)
+pe <- dv[dv$vida_media_anios == "pata_efectiva_5_puts_zn", ]
+cat("\nDV01 efectivo de los 5 puts de ZN:", pe$dv01_usd_por_pb, "USD por pb\n")
+cat("Razón de cobertura:", pe$contratos_zn_equivalentes, "% del DV01 del libro\n")
+```
+
+El nocional de 4,771 millones sale de la Nota 7 del 10-K, pero el plazo medio no está publicado.
+Se supone cinco años, y la tabla muestra cuánto se mueve el resultado con ese supuesto. Con
+cualquier plazo razonable, la posición de CME cubre una fracción minúscula del riesgo real. **Es
+una demostración a escala, no una cobertura efectiva**: lo que se evalúa es la lógica y el
+dimensionamiento.
+
+## Black contra árbol binomial
+
+```{r sw-val}
+va <- read.csv("../Datos/swap_valuacion.csv", stringsAsFactors = FALSE)
+data.frame(Pata = va$pata, Black = va$black, `CRR americana` = va$crr_americana,
+           `CRR europea` = va$crr_europea, `Prima del ticket` = va$prima_ticket, check.names = FALSE)
+```
+
+Las dos valuaciones coinciden hasta el tercer decimal, y la prima americana no supera a la
+europea: con 2.4 días de vida, el ejercicio anticipado no vale nada medible en estas opciones. La
+prima del ticket (el límite que se escribió el 6 de noviembre) queda por encima del modelo en el put de ZN, lo
+que indica una volatilidad implícita de la semanal mayor que la usada. En el call de 6C ocurre lo contrario: el
+límite de 0.00005 es el tick mínimo y está muy por debajo del valor teórico de 0.0008, así que el
+modelo le asigna una ganancia esperada positiva.
+
+## Monte Carlo del P&L conjunto
+
+```{r sw-mc}
+mc <- read.csv("../Datos/swap_resumen_mc.csv", stringsAsFactors = FALSE)
+data.frame(Posición = mc$pata, Media = usd(mc$media), `Desv. est.` = usd(mc$desv),
+           P5 = usd(mc$p5), Mediana = usd(mc$p50), P95 = usd(mc$p95),
+           `P(ganar)` = pct(mc$p_ganar * 100, 1), `CVaR 95` = usd(mc$cvar95),
+           check.names = FALSE)
+cat("\nPrima total comprometida:", usd(mc$prima[mc$pata == "Conjunto"]), "\n")
+cat("Pérdida máxima:", usd(-mc$prima[mc$pata == "Conjunto"]), "(no hay patas vendidas)\n")
+```
+
+```{r sw-mc-fig, out.width = "100%"}
+knitr::include_graphics("../Datos/swap_montecarlo.png")
+```
+
+Son 200,000 trayectorias con variables antitéticas, correlación de 0.30 entre los retornos de los
+dos futuros y volatilidades implícitas del 5 de noviembre. La correlación se justifica
+económicamente: si suben las tasas el ZN cae y el dólar canadiense tiende a caer también, así que
+los retornos de los futuros se mueven juntos y los P&L de las opciones, en sentido opuesto.
+
+La lectura de la media exige cuidado. El put de ZN pierde en promedio $262: es el **costo esperado
+del seguro**. El call de 6C gana en promedio $615, pero solo porque su límite (0.00005) está muy por
+debajo de su valuación: a ese precio el modelo ve una ganancia esperada. Por eso se reporta también el put de ZN solo, que es el costo limpio del seguro. Con la
+segunda pata la desviación sube de $1,563 a $1,740, pero la probabilidad de ganar pasa de 29.1 % a 48.0 % y la
+pérdida máxima es de $1,290. Las dos patas tienen sensibilidad inversa (correlación de sus P&L de -0.18): una financia a la otra.
+
+## Regímenes
+
+```{r sw-reg}
+rg <- read.csv("../Datos/swap_regimenes.csv", stringsAsFactors = FALSE)
+data.frame(Régimen = rg$regimen, `Put ZN` = usd(rg$put_zn), `Call 6C` = usd(rg$call_6c),
+           Total = usd(rg$total), check.names = FALSE)
+```
+
+Los regímenes se valoran al vencimiento con un movimiento de 1 punto en ZN y de 0.5 % en el dólar canadiense (cerca de 1.5 desviaciones a 2.4 días). Solo el cuarto régimen castiga las dos patas a la vez: dólar fuerte con rendimientos a la baja, el
+patrón de una fuga hacia la calidad. En los otros tres una pata financia a la otra. Con una vida tan corta, la pérdida máxima ($1,290) es solo la prima de las dos patas.
+
+## Tickets de la semana (diseño)
+
+| Pata | Instrumento | Contratos | Límite | Prima |
+|---|---|---|---|---|
+| Tasas | Put ZNA6 107.25, vence 9-nov | 5 | 0.25 | $1,250 |
+| Divisa | Call 6C66 0.715, vence 9-nov | 8 | 0.00005 | $40 |
+
+La prima total es de $1,290, el 1.27 % de la cuenta de CME ($101,200.63 al 6 de noviembre), y la
+pérdida máxima es esa misma cifra. Los tickets de confirmación se capturaron el 6 de noviembre a las
+2:59 pm (2.40 días para el vencimiento). Se mantienen las cantidades de esos tickets; con una regla de
+presupuesto por pata ($2,750 y $2,100) y los precios teóricos de Black, el tamaño habría sido de 13 puts de
+ZN y 25 calls de 6C. Los tickets se capturaron en la pantalla de confirmación y **no se enviaron**: son el diseño ajustado al vencimiento semanal del 9 de noviembre que pidió el profesor, no una posición abierta (`evidencias/capturas/cme/`). Las posiciones ejecutadas son las del ciclo del 5 de noviembre (sección 5), en la cuenta de Eduardo. El límite del call de 6C
+está en el tick mínimo, por debajo de su valuación teórica.
+
+# Un patrón que se repite
+
+```{r concentracion}
+conc <- data.frame(
+  Posicion = c("TLT put 78 (Investopedia, oct)", "ASML call 1570 (ciclo III, oct)"),
+  Prima_unitaria = c("$0.45", "$109.40"),
+  Contratos = c("10 — la única con ese tamaño", "1"),
+  Participacion = c("el 2.5% de la prima del libro", "un tercio de la prima del ciclo"),
+  Resultado = c("-97.8%", "abierta; -76.4% en Investopedia"),
+  stringsAsFactors = FALSE)
+conc
+```
+
+El put de TLT fue la única posición del libro de Investopedia con diez contratos; todas las demás
+llevaron uno o dos. Era la más barata por contrato y esa baratura invitó al tamaño. Pero una prima
+de 0.45 sobre un subyacente de 78 corresponde a una opción muy fuera del dinero: estaba barata
+porque la probabilidad de ejercicio era remota, no porque estuviera mal valuada. Perdió el 97.8 %.
+
+El mismo sesgo —dejar que el precio unitario, y no el riesgo, determine el tamaño— produjo la
+concentración de ASML en el ciclo III. Que aparezca dos veces, en libros distintos y con meses de
+diferencia, lo convierte en un patrón del equipo y no en mala suerte. El ciclo del 5 de noviembre lo corrigió explícitamente: la prima total comprometida fue el 8.95 % del capital, repartida en dos posiciones de tamaño comparable, frente al 33 % concentrado del ciclo anterior. El diseño semanal de la sección 7 mantiene ese criterio con una prima total de 1,290 USD (1.27 % de la cuenta de CME de Mariann), aunque no se colocó.
+
+# Lo que este documento no puede afirmar
+
+El valor de un reporte de este tipo depende de que sus límites estén declarados.
+
+```{r limitaciones}
+lim <- data.frame(
+  Asunto = c("Operaciones de Mariann Antonelli",
+             "Naturaleza del ciclo III",
+             "Desenlace del diferencial de crudo de Ulises",
+             "Criterio del ranking de Investopedia",
+             "Correlación entre subyacentes",
+             "Estado de las posiciones de CME",
+             "Operaciones de Eduardo y Ulises de esta semana"),
+  Situacion = c(
+    "Su libro se incorpora en la sección 6 con el historial de Investopedia y el archivo de TradingView. CME Practice no ofrece historial descargable, así que se documenta con capturas.",
+    "Las posiciones del 18 de diciembre sí están abiertas en Investopedia y en TradingView Paper Trading de Mariann (sección 6). Lo que no se encuentra son esas posiciones en las cuentas de Eduardo y Ulises, cuyos saldos son efectivo íntegro.",
+    "Se conoce la apertura del 6 de octubre y el P&L instantáneo de -$3,170 de esa fecha, pero no el cierre.",
+    "Eduardo figura en el lugar 2 con $1,003,085 y Ulises en el 3 con $1,003,845, pese a que este último tiene más capital. El líder reportado tiene menos que ambos. La tabla no se ordena por valor de cuenta y el criterio se desconoce.",
+    "Las simulaciones tratan los subyacentes como independientes. No lo son: los semiconductores comparten ciclo y los metales preciosos también. El supuesto subestima la cola de pérdidas.",
+    "Las posiciones del ciclo del 5 de noviembre (10 calls 6C y 10 puts ZN) estaban en la cuenta de Eduardo y se cerraron el 9 de noviembre con un P&L realizado de -$3,193.75. Los tickets de 5 puts y 8 calls del 6 de noviembre no se enviaron y se presentan como diseño. La fecha de vencimiento de las opciones del 5-nov no aparece en las capturas.",
+    "Los libros de Eduardo y Ulises se incorporan con lo auditado al 5 de noviembre. El reporte no incluye operaciones posteriores a esa fecha."),
+  stringsAsFactors = FALSE)
+lim
+```
+
+# Resumen
+
+```{r resumen-final}
+res <- data.frame(
+  Concepto = c("Operaciones cerradas y auditadas", "Capital desplegado en total",
+               "Resultado realizado acumulado", "Tasa de acierto (Investopedia)",
+               "Razón ganancia / pérdida (Investopedia)",
+               "Prima comprometida en el ciclo de CME del 5-nov",
+               "Pérdida máxima de esas posiciones",
+               "P&L realizado al cerrar (9-nov)"),
+  Valor = c("14 posiciones en dos plataformas",
+            usd(sum(inv$Costo) + 58*50 + (100.5-31.0)*100),
+            usd(sum(inv$PL) + sum(cme$Calculado)),
+            "55% (6 aciertos de 11)",
+            "2.38 a 1",
+            usd(8069), usd(-8069),
+            "-$3,193.75 (39.6 % de la prima)"),
+  stringsAsFactors = FALSE)
+res
+```
+
+El resultado realizado del periodo es negativo. La causa está identificada y no es la selección de
+posiciones: el libro de Investopedia, con la misma lógica de selección, rindió 8.1 % sobre el
+capital arriesgado con una tasa de acierto de apenas 55 %, porque la ganancia media de los
+aciertos superó 2.38 veces la pérdida media de los errores. Lo que destruyó el resultado fue
+sostener tres posiciones de CME hasta que el valor temporal se agotó por completo.
+
+El ciclo del 5 de noviembre incorpora las tres correcciones que se desprenden de lo
+anterior: tamaño proporcional al riesgo y no al precio unitario, dos patas con sensibilidad
+inversa en lugar de ocho con la misma vista, y un horizonte de revisión fijado antes de la
+apertura.
+
+# Información de la sesión
+
+```{r sesion}
+sessionInfo()
+```
